@@ -20,7 +20,14 @@ from app.runtime.state import JobRecord
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
-_OUTPUT_NAMES = ("generated.png", "generated.jpg", "generated.webp")
+_OUTPUT_NAMES = (
+    "current.png",
+    "current.jpg",
+    "current.webp",
+    "generated.png",
+    "generated.jpg",
+    "generated.webp",
+)
 _MEDIA_EXT: dict[GeneratedMediaType, str] = {"PNG": "png", "JPG": "jpg", "WebP": "webp"}
 _MEDIA_CONTENT_TYPE: dict[GeneratedMediaType, str] = {
     "PNG": "image/png",
@@ -55,6 +62,8 @@ class ArtifactStore(Protocol):
     def get_output(self, job_id: str, filename: str | None = None) -> bytes | None: ...
 
     def get_artifact(self, job_id: str, name: str) -> bytes | None: ...
+
+    def list_artifact_names(self, job_id: str, directory: str) -> list[str]: ...
 
     def list_job_ids(self) -> list[str]: ...
 
@@ -141,69 +150,77 @@ class FilesystemArtifactStore:
         stored = record.generation
         if stored is None:
             return
+        versions = _generation_versions(record)
+        current_index = versions[-1][0] if versions else 1
         self._write_json(
             record.job_id,
             "generation.json",
-            {
-                "operation": stored.operation.model_dump(mode="json"),
-                "receipt": stored.receipt.model_dump(mode="json") if stored.receipt else None,
-                "status": stored.status,
-            },
+            _generation_payload(stored, current_index),
         )
+        for index, version in versions:
+            self._write_generation_version(record, version, index)
 
     def save_critique(self, record: JobRecord) -> None:
         stored = record.critique
         if stored is None or stored.result is None:
             return
+        generation_index = _generation_index_for_output(
+            record, stored.result.generation_output_id
+        )
+        critique_index = generation_index
         payload = {
             "model_id": stored.model_id,
             "execution_status": stored.status,
+            "critique_index": critique_index,
+            "assessed_generation_index": generation_index,
+            "generation_output_id": stored.result.generation_output_id,
             "assessment": stored.result.model_dump(mode="json"),
         }
         self._write_json(record.job_id, "critique.json", payload)
-        output_id = stored.result.generation_output_id
-        self._write_json(record.job_id, f"critiques/{output_id}.json", payload)
+        self._write_json(
+            record.job_id,
+            critique_artifact_name(critique_index, generation_index),
+            payload,
+        )
 
     def save_repair(self, record: JobRecord) -> None:
         stored = record.repair
         if stored is None:
             return
+        count = stored.plan.repair_count
+        source_index = count if count else 0
+        result_index = count + 1 if count else 0
         payload = {
             "status": stored.status,
+            "repair_index": count,
+            "source_generation_index": source_index,
+            "result_generation_index": result_index,
             "plan": stored.plan.model_dump(mode="json"),
         }
         self._write_json(record.job_id, "repair.json", payload)
-        count = stored.plan.repair_count
-        name = f"repairs/{count}.json" if count else "repairs/hold.json"
-        self._write_json(record.job_id, name, payload)
-        for index, previous in enumerate(record.generation_history, start=1):
+        if count:
             self._write_json(
                 record.job_id,
-                f"generations/{index}.json",
-                {
-                    "operation": previous.operation.model_dump(mode="json"),
-                    "receipt": previous.receipt.model_dump(mode="json")
-                    if previous.receipt
-                    else None,
-                    "status": previous.status,
-                },
+                repair_artifact_name(count, source_index, result_index),
+                payload,
             )
-            if previous.receipt is not None and previous.receipt.output is not None:
-                data = record.reference_bytes.get(previous.receipt.output.output_id)
-                if data:
-                    self.save_output(
-                        record.job_id,
-                        f"{previous.receipt.output.output_id}.{_MEDIA_EXT[previous.receipt.output.media_type]}",
-                        data,
-                    )
+        else:
+            self._write_json(record.job_id, "repairs/hold.json", payload)
+        for index, version in _generation_versions(record):
+            self._write_generation_version(record, version, index)
 
     def save_input(self, job_id: str, filename: str, data: bytes) -> None:
         path = self._resolve(job_id, "input", _safe_filename(filename))
         self._write_bytes(path, data)
 
     def save_output(self, job_id: str, filename: str, data: bytes) -> None:
-        path = self._resolve(job_id, "output", _safe_filename(filename))
-        self._write_bytes(path, data)
+        safe = _safe_filename(filename)
+        self._write_bytes(self._resolve(job_id, "output", safe), data)
+        stem, _, ext = safe.partition(".")
+        if ext and stem == "generated":
+            self._write_bytes(self._resolve(job_id, "output", f"current.{ext}"), data)
+        elif ext and stem == "current":
+            self._write_bytes(self._resolve(job_id, "output", f"generated.{ext}"), data)
 
     def get_output(self, job_id: str, filename: str | None = None) -> bytes | None:
         names = (_safe_filename(filename),) if filename else _OUTPUT_NAMES
@@ -219,6 +236,13 @@ class FilesystemArtifactStore:
         if path.is_file():
             return path.read_bytes()
         return None
+
+    def list_artifact_names(self, job_id: str, directory: str) -> list[str]:
+        parts = _safe_relative_parts(directory)
+        path = self._resolve(job_id, *parts)
+        if not path.is_dir():
+            return []
+        return sorted(child.name for child in path.iterdir() if child.is_file())
 
     def job_dir(self, job_id: str) -> Path:
         return self._job_dir(job_id)
@@ -267,6 +291,26 @@ class FilesystemArtifactStore:
             raise ValueError("artifact path escaped the job directory")
         return candidate
 
+    def _write_generation_version(self, record: JobRecord, stored: object, index: int) -> None:
+        from app.runtime.state import StoredGeneration
+
+        if not isinstance(stored, StoredGeneration):
+            return
+        payload = _generation_payload(stored, index)
+        stem = generation_artifact_stem(index)
+        self._write_json(record.job_id, f"generations/{stem}.json", payload)
+        if stored.receipt is None or stored.receipt.output is None:
+            return
+        output = stored.receipt.output
+        data = record.reference_bytes.get(output.output_id)
+        if not data:
+            return
+        ext = _MEDIA_EXT[output.media_type]
+        self._write_bytes(
+            self._resolve(record.job_id, "generations", f"{stem}.{ext}"),
+            data,
+        )
+
 
 def output_filename(media_type: GeneratedMediaType) -> str:
     return f"generated.{_MEDIA_EXT[media_type]}"
@@ -274,6 +318,70 @@ def output_filename(media_type: GeneratedMediaType) -> str:
 
 def content_type_for(media_type: GeneratedMediaType) -> str:
     return _MEDIA_CONTENT_TYPE[media_type]
+
+
+def generation_artifact_stem(index: int) -> str:
+    kind = "initial" if index == 1 else "repair"
+    return f"{index:02d}_{kind}"
+
+
+def generation_artifact_name(index: int, media_type: GeneratedMediaType) -> str:
+    return f"generations/{generation_artifact_stem(index)}.{_MEDIA_EXT[media_type]}"
+
+
+def critique_artifact_name(critique_index: int, generation_index: int) -> str:
+    return (
+        f"critiques/{critique_index:02d}_critique_generation_{generation_index:02d}.json"
+    )
+
+
+def repair_artifact_name(repair_index: int, source_index: int, result_index: int) -> str:
+    return (
+        f"repairs/{repair_index:02d}_repair_generation_"
+        f"{source_index:02d}_to_{result_index:02d}.json"
+    )
+
+
+def _generation_versions(record: JobRecord) -> list[tuple[int, object]]:
+    from app.runtime.state import StoredGeneration
+
+    items: list[StoredGeneration] = list(record.generation_history)
+    current = record.generation
+    if current is not None:
+        key = current.operation.operation_key
+        if not any(item.operation.operation_key == key for item in items):
+            items.append(current)
+    return [(index, item) for index, item in enumerate(items, start=1)]
+
+
+def _generation_index_for_output(record: JobRecord, output_id: str) -> int:
+    for index, stored in _generation_versions(record):
+        receipt = getattr(stored, "receipt", None)
+        if receipt is not None and receipt.output is not None:
+            if receipt.output.output_id == output_id:
+                return index
+    return max(len(_generation_versions(record)), 1)
+
+
+def _generation_payload(stored: object, index: int) -> dict[str, object]:
+    from app.runtime.state import StoredGeneration
+
+    assert isinstance(stored, StoredGeneration)
+    kind = "initial" if index == 1 else "repair"
+    artifact_filename = None
+    if stored.receipt is not None and stored.receipt.output is not None:
+        artifact_filename = (
+            f"{generation_artifact_stem(index)}."
+            f"{_MEDIA_EXT[stored.receipt.output.media_type]}"
+        )
+    return {
+        "sequence_index": index,
+        "generation_kind": kind,
+        "artifact_filename": artifact_filename,
+        "operation": stored.operation.model_dump(mode="json"),
+        "receipt": stored.receipt.model_dump(mode="json") if stored.receipt else None,
+        "status": stored.status,
+    }
 
 
 def persist_job_record(

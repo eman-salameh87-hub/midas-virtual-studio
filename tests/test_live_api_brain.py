@@ -101,13 +101,13 @@ def test_live_http_job_brain_openrouter() -> None:
 
     eye = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert eye.status_code == 200, eye.text
 
     brain = client.post(
         f"/api/v1/jobs/{job_id}/brain",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     if brain.status_code != 200:
         pytest.fail(

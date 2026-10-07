@@ -106,24 +106,24 @@ def test_live_http_job_generate_openrouter_image() -> None:
         )
         assert created.status_code == 200, created.text
         job_id = created.json()["job_id"]
-        eye = client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": PLANNING_MODEL})
+        eye = client.post(f"/api/v1/jobs/{job_id}/eye", json={})
         if eye.status_code != 200:
             last_error = "eye: " + eye.text
             continue
         brain = client.post(
-            f"/api/v1/jobs/{job_id}/brain", json={"model_id": PLANNING_MODEL}
+            f"/api/v1/jobs/{job_id}/brain", json={}
         )
         if brain.status_code != 200:
             last_error = "brain: " + brain.text
             continue
         stylist = client.post(
-            f"/api/v1/jobs/{job_id}/stylist", json={"model_id": PLANNING_MODEL}
+            f"/api/v1/jobs/{job_id}/stylist", json={}
         )
         if stylist.status_code != 200:
             last_error = "stylist: " + stylist.text
             continue
         compiled = client.post(
-            f"/api/v1/jobs/{job_id}/compile", json={"model_id": IMAGE_MODEL}
+            f"/api/v1/jobs/{job_id}/compile", json={}
         )
         if compiled.status_code != 200:
             last_error = "compile: " + compiled.text

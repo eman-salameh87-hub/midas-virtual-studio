@@ -6,6 +6,7 @@ from app.api.jobs import get_eye_provider
 from app.contracts.job import Phase0JobContract
 from app.main import app
 from app.providers.fake_eye import FakeEyeProvider, observation_for
+from app.runtime.model_policy import eye_model
 from app.runtime.state import JOB_STORE
 from app.stages.eye import build_eye_input
 from tests.png_bytes import PNG_1X1, PNG_B64, PNG_HASH
@@ -141,7 +142,7 @@ def test_post_eye_executes_with_fake_provider() -> None:
 
     response = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
 
     assert response.status_code == 200
@@ -159,13 +160,13 @@ def test_post_eye_executes_with_fake_provider() -> None:
 def test_eye_observation_is_persisted_in_job_state() -> None:
     client = _client()
     job_id = _create_job(client)
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
 
     stored = JOB_STORE.get(job_id)
     assert stored is not None
     assert stored.observation is not None
     assert stored.readiness is not None
-    assert stored.eye_model_id == CALLER_MODEL
+    assert stored.eye_model_id == eye_model()
     expected = observation_for(build_eye_input(_contract(), ["ref-towel"]), "ready")
     assert stored.observation == expected
     assert stored.readiness.status == "ready"
@@ -176,7 +177,7 @@ def test_get_eye_returns_the_stored_observation() -> None:
     job_id = _create_job(client)
     posted = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     ).json()["observation"]
 
     response = client.get(f"/api/v1/jobs/{job_id}/eye")
@@ -199,7 +200,7 @@ def test_get_status_reflects_eye_execution() -> None:
     assert before.json()["stage"] == "intake"
     assert before.json()["state"] == "accepted"
 
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
     after = client.get(f"/api/v1/jobs/{job_id}/status")
 
     assert after.status_code == 200
@@ -268,7 +269,7 @@ def test_end_to_end_job_eye_persistence() -> None:
 
     executed = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert executed.status_code == 200
     observation = executed.json()["observation"]
@@ -287,7 +288,7 @@ def test_end_to_end_job_eye_persistence() -> None:
 def test_eye_unknown_job_returns_404() -> None:
     response = _client().post(
         "/api/v1/jobs/missing-job/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "JOB_NOT_FOUND"
@@ -345,7 +346,7 @@ def test_post_eye_with_failing_provider_hides_internals() -> None:
         job_id = _create_job(client)
         response = client.post(
             f"/api/v1/jobs/{job_id}/eye",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
     finally:
         app.dependency_overrides.clear()
@@ -370,7 +371,7 @@ def test_fake_provider_receives_job_reference_identity() -> None:
         job_id = _create_job(client)
         response = client.post(
             f"/api/v1/jobs/{job_id}/eye",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
     finally:
         app.dependency_overrides[get_eye_provider] = lambda: FakeEyeProvider()
@@ -383,7 +384,7 @@ def test_fake_provider_receives_job_reference_identity() -> None:
     assert source.media_type == "PNG"
     assert source.content_hash == HASH
     assert source.role == "Product / vendor reference"
-    assert provider.requests[0].model_id == CALLER_MODEL
+    assert provider.requests[0].model_id == eye_model()
 
 
 def test_missing_image_content_base64_is_rejected() -> None:

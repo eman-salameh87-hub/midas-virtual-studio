@@ -84,6 +84,7 @@ from app.runtime.jobs import (
     GenerationProviderFailedError,
     JobNotFoundError,
     JobOwnerMismatchError,
+    ModelMismatchError,
     RevisionMismatchError,
     StylistNotReadyError,
     StylistNotRunError,
@@ -110,6 +111,15 @@ from app.runtime.jobs import (
     get_job_stylist,
 )
 from app.runtime.artifacts import content_type_for, get_artifact_store, output_filename
+from app.runtime.model_policy import (
+    allowed_models_for_stage,
+    brain_model,
+    critique_model,
+    eye_model,
+    image_model,
+    stylist_model,
+    validate_stage_model,
+)
 from app.runtime.state import JOB_STORE, InMemoryJobStore, JobRecord
 
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
@@ -266,7 +276,7 @@ def get_job_endpoint(
     response_model=ExecuteEyeResponse,
     summary="Execute Eye",
     description=(
-        "Run Eye for an existing job using the caller-supplied model_id. "
+        "Run Eye for an existing job. Pass model_id or edit to an allowed model. "
         "References and stored image bytes are taken from the job. "
         "The observation is persisted on the job."
     ),
@@ -281,10 +291,19 @@ def post_job_eye(
     revision: RevisionParam = None,
 ) -> ExecuteEyeResponse:
     try:
+        model_id = validate_stage_model("eye", body.model_id)
+    except (ValueError, ValidationError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={"stage": "eye", "requested_model": getattr(body, "model_id", None)},
+        ) from exc
+    try:
         record = execute_job_eye(
             store,
             job_id=job_id,
-            model_id=body.model_id,
+            model_id=model_id,
             provider=provider,
             owner_id=owner_id,
             revision=revision,
@@ -348,10 +367,9 @@ def get_job_eye_endpoint(
     response_model=ExecuteBrainResponse,
     summary="Execute Brain",
     description=(
-        "Run Brain for an existing job using the caller-supplied model_id. "
-        "The frozen job contract, stored EyeObservation, readiness, and "
-        "reference evidence identity are taken from the job. The frontend "
-        "does not resend the contract."
+        "Run Brain for an existing job. Pass model_id or edit to an allowed model. "
+        "The frozen job contract, stored EyeObservation, readiness, and reference "
+        "evidence identity are taken from the job. The frontend does not resend the contract."
     ),
     responses={
         403: _ERRORS[403],
@@ -370,10 +388,19 @@ def post_job_brain(
     revision: RevisionParam = None,
 ) -> ExecuteBrainResponse:
     try:
+        model_id = validate_stage_model("brain", body.model_id)
+    except (ValueError, ValidationError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={"stage": "brain", "requested_model": getattr(body, "model_id", None)},
+        ) from exc
+    try:
         record = execute_job_brain(
             store,
             job_id=job_id,
-            model_id=body.model_id,
+            model_id=model_id,
             provider=provider,
             owner_id=owner_id,
             revision=revision,
@@ -458,9 +485,9 @@ def get_job_brain_endpoint(
     response_model=ExecuteStylistResponse,
     summary="Execute Stylist",
     description=(
-        "Run Stylist for an existing job using the caller-supplied model_id. "
-        "The frozen job contract, stored EyeObservation, BrainPlan, and "
-        "evidence identity are taken from the job."
+        "Run Stylist for an existing job. Pass model_id or edit to an allowed model. "
+        "The frozen job contract, stored EyeObservation, BrainPlan, and evidence identity "
+        "are taken from the job."
     ),
     responses={
         403: _ERRORS[403],
@@ -479,10 +506,19 @@ def post_job_stylist(
     revision: RevisionParam = None,
 ) -> ExecuteStylistResponse:
     try:
+        model_id = validate_stage_model("stylist", body.model_id)
+    except (ValueError, ValidationError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={"stage": "stylist", "requested_model": getattr(body, "model_id", None)},
+        ) from exc
+    try:
         record = execute_job_stylist(
             store,
             job_id=job_id,
-            model_id=body.model_id,
+            model_id=model_id,
             provider=provider,
             owner_id=owner_id,
             revision=revision,
@@ -582,7 +618,8 @@ def get_job_stylist_endpoint(
     summary="Execute Engine compile",
     description=(
         "Compile Brain locks and Stylist scene decisions into an EngineCompile "
-        "artifact using the caller-supplied model_id. Does not generate an image."
+        "artifact. Pass model_id or edit to an allowed model. "
+        "Does not generate an image."
     ),
     responses={
         403: _ERRORS[403],
@@ -601,10 +638,19 @@ def post_job_compile(
     revision: RevisionParam = None,
 ) -> ExecuteCompileResponse:
     try:
+        model_id = validate_stage_model("compile", body.model_id)
+    except (ValueError, ValidationError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={"stage": "compile", "requested_model": getattr(body, "model_id", None)},
+        ) from exc
+    try:
         record = execute_job_compile(
             store,
             job_id=job_id,
-            model_id=body.model_id,
+            model_id=model_id,
             compiler=compiler,
             owner_id=owner_id,
             revision=revision,
@@ -718,7 +764,8 @@ def get_job_compile_endpoint(
     summary="Execute generation",
     description=(
         "Claim an operation for the persisted EngineCompile and dispatch it "
-        "through the generation adapter. Uncertain receipts are not retried. "
+        "through the generation adapter. The submitted model_id must match the "
+        "compiled image model. Uncertain receipts are not retried. "
         "Does not critique, repair, or release."
     ),
     responses={
@@ -737,11 +784,20 @@ def post_job_generate(
     owner_id: OwnerIdParam = None,
     revision: RevisionParam = None,
 ) -> ExecuteGenerateResponse:
-    del body
+    try:
+        model_id = validate_stage_model("generate", body.model_id)
+    except (ValueError, ValidationError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={"stage": "generate", "requested_model": getattr(body, "model_id", None)},
+        ) from exc
     try:
         record = execute_job_generate(
             store,
             job_id=job_id,
+            model_id=model_id,
             provider=provider,
             owner_id=owner_id,
             revision=revision,
@@ -752,6 +808,18 @@ def post_job_generate(
         _owner_mismatch(job_id, exc.owner_id)
     except RevisionMismatchError as exc:
         _revision_mismatch(job_id, exc.expected, exc.actual)
+    except ModelMismatchError as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={
+                "job_id": job_id,
+                "stage": exc.stage,
+                "requested_model": exc.requested_model,
+                "compiled_model": exc.compiled_model,
+            },
+        ) from exc
     except EyeNotRunError:
         raise ApiError(
             status_code=409,
@@ -869,7 +937,8 @@ def get_job_generate_endpoint(
     summary="Execute Critique · assess",
     description=(
         "Inspect the original reference and generated image against the locked "
-        "contract. Does not repair or release. GET does not rerun this call."
+        "contract. Pass model_id or edit to an allowed model. "
+        "Does not repair or release. GET does not rerun this call."
     ),
     responses={
         403: _ERRORS[403],
@@ -888,10 +957,19 @@ def post_job_critique(
     revision: RevisionParam = None,
 ) -> ExecuteCritiqueResponse:
     try:
+        model_id = validate_stage_model("critique", body.model_id)
+    except (ValueError, ValidationError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={"stage": "critique", "requested_model": getattr(body, "model_id", None)},
+        ) from exc
+    try:
         record = execute_job_critique(
             store,
             job_id=job_id,
-            model_id=body.model_id,
+            model_id=model_id,
             provider=provider,
             owner_id=owner_id,
             revision=revision,
@@ -1055,7 +1133,8 @@ def get_job_critique_endpoint(
     description=(
         "Plan and execute one bounded repair (maximum two). "
         "Requires a Critique assessment with overall_result=repair_required. "
-        "Does not create Repair #3 or release."
+        "The submitted model_id must match the compiled image model. "
+        "The planner is deterministic. Does not create Repair #3 or release."
     ),
     responses={
         403: _ERRORS[403],
@@ -1075,12 +1154,21 @@ def post_job_repair(
     revision: RevisionParam = None,
 ) -> ExecuteRepairResponse:
     try:
+        model_id = validate_stage_model("repair", body.model_id)
+    except (ValueError, ValidationError) as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={"stage": "repair", "requested_model": getattr(body, "model_id", None)},
+        ) from exc
+    try:
         record = execute_job_repair(
             store,
             job_id=job_id,
-            model_id=body.model_id,
             planner=planner,
             provider=provider,
+            model_id=model_id,
             owner_id=owner_id,
             revision=revision,
         )
@@ -1090,6 +1178,18 @@ def post_job_repair(
         _owner_mismatch(job_id, exc.owner_id)
     except RevisionMismatchError as exc:
         _revision_mismatch(job_id, exc.expected, exc.actual)
+    except ModelMismatchError as exc:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message=str(exc),
+            details={
+                "job_id": job_id,
+                "stage": exc.stage,
+                "requested_model": exc.requested_model,
+                "compiled_model": exc.compiled_model,
+            },
+        ) from exc
     except EyeNotRunError:
         raise ApiError(
             status_code=409,

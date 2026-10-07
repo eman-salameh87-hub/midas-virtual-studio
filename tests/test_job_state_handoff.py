@@ -102,7 +102,7 @@ def test_eye_execution_persists_observation_on_job_state() -> None:
     job_id = created.json()["job_id"]
     posted = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert posted.status_code == 200
     posted_observation = posted.json()["observation"]
@@ -119,7 +119,7 @@ def test_eye_execution_persists_observation_on_job_state() -> None:
 def test_get_eye_returns_persisted_observation() -> None:
     client = _client()
     job_id = client.post("/api/v1/jobs", json={"contract": _intake()}).json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
     stored = JOB_STORE.get(job_id)
     assert stored is not None
     persisted = stored.observation
@@ -133,7 +133,7 @@ def test_get_eye_returns_persisted_observation() -> None:
 def test_job_state_read_recovers_observation_without_eye_return_value() -> None:
     client = _client()
     job_id = client.post("/api/v1/jobs", json={"contract": _intake()}).json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
 
     recovered = JOB_STORE.get(job_id)
     assert recovered is not None
@@ -149,7 +149,7 @@ def test_job_state_read_recovers_observation_without_eye_return_value() -> None:
 def test_load_brain_input_returns_contract_and_observation() -> None:
     client = _client()
     job_id = client.post("/api/v1/jobs", json={"contract": _intake()}).json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
 
     loaded = load_brain_input(JOB_STORE, job_id)
     stored = JOB_STORE.get(job_id)
@@ -172,7 +172,7 @@ def test_wrong_owner_cannot_read_eye_observation() -> None:
     client = _client()
     first = client.post("/api/v1/jobs", json={"contract": _intake("owner-1")})
     job_id = first.json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
 
     denied = client.get(f"/api/v1/jobs/{job_id}/eye", params={"owner_id": "owner-2"})
     assert denied.status_code == 403
@@ -188,7 +188,7 @@ def test_wrong_job_cannot_read_another_observation() -> None:
     second = client.post("/api/v1/jobs", json={"contract": _intake("owner-2")})
     job_a = first.json()["job_id"]
     job_b = second.json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_a}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_a}/eye", json={})
 
     missing = client.get(f"/api/v1/jobs/{job_b}/eye")
     assert missing.status_code == 409
@@ -201,7 +201,7 @@ def test_wrong_job_cannot_read_another_observation() -> None:
 def test_revision_binding_is_preserved() -> None:
     client = _client()
     job_id = client.post("/api/v1/jobs", json={"contract": _intake()}).json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
 
     mismatch = client.get(f"/api/v1/jobs/{job_id}/eye", params={"revision": 9})
     assert mismatch.status_code == 409
@@ -217,8 +217,8 @@ def test_revision_binding_is_preserved() -> None:
 def test_load_stylist_input_returns_contract_observation_and_brain() -> None:
     client = _client()
     job_id = client.post("/api/v1/jobs", json={"contract": _intake()}).json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
-    client.post(f"/api/v1/jobs/{job_id}/brain", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
+    client.post(f"/api/v1/jobs/{job_id}/brain", json={})
 
     loaded = load_stylist_input(JOB_STORE, job_id)
     stored = JOB_STORE.get(job_id)
@@ -234,7 +234,7 @@ def test_load_stylist_input_returns_contract_observation_and_brain() -> None:
 def test_load_stylist_input_fails_when_brain_is_absent() -> None:
     client = _client()
     job_id = client.post("/api/v1/jobs", json={"contract": _intake()}).json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
     with pytest.raises(BrainNotRunError):
         load_stylist_input(JOB_STORE, job_id)
 

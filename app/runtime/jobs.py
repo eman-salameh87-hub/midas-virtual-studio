@@ -200,6 +200,25 @@ class RepairNotReadyError(Exception):
         super().__init__(job_id)
 
 
+class ModelMismatchError(Exception):
+    """Requested model does not match the compiled image model."""
+
+    def __init__(
+        self,
+        job_id: str,
+        stage: str,
+        requested_model: str,
+        compiled_model: str,
+    ) -> None:
+        self.job_id = job_id
+        self.stage = stage
+        self.requested_model = requested_model
+        self.compiled_model = compiled_model
+        super().__init__(
+            f"Requested {stage} model '{requested_model}' must match compiled image model '{compiled_model}'"
+        )
+
+
 class RepairProviderFailedError(Exception):
     """Repair generation adapter failed. Public message is stable; details are redacted."""
 
@@ -874,6 +893,7 @@ def execute_job_generate(
     *,
     job_id: str,
     provider: GenerationProvider,
+    model_id: str | None = None,
     owner_id: str | None = None,
     revision: int | None = None,
 ) -> JobRecord:
@@ -890,6 +910,13 @@ def execute_job_generate(
         raise EngineNotRunError(job_id)
 
     compile_artifact = record.engine.result
+    if model_id is not None and model_id != compile_artifact.model_id:
+        raise ModelMismatchError(
+            job_id=job_id,
+            stage="generate",
+            requested_model=model_id,
+            compiled_model=compile_artifact.model_id,
+        )
     if not generation_may_proceed(compile_artifact):
         raise GenerationNotReadyError(
             job_id,
@@ -1133,13 +1160,16 @@ def execute_job_repair(
     store: JobStore,
     *,
     job_id: str,
-    model_id: str,
     planner: RepairPlanner,
     provider: GenerationProvider,
+    model_id: str | None = None,
     owner_id: str | None = None,
     revision: int | None = None,
 ) -> JobRecord:
-    """Plan and execute one bounded repair. Never creates Repair #3."""
+    """Plan and execute one bounded repair. Never creates Repair #3.
+
+    Image generation uses EngineCompile.model_id. The planner is deterministic.
+    """
 
     record = get_job(store, job_id, owner_id=owner_id, revision=revision)
     if record.observation is None or record.readiness is None:
@@ -1150,6 +1180,14 @@ def execute_job_repair(
         raise StylistNotRunError(job_id)
     if record.engine is None or record.engine.result is None:
         raise EngineNotRunError(job_id)
+    image_model_id = record.engine.result.model_id
+    if model_id is not None and model_id != image_model_id:
+        raise ModelMismatchError(
+            job_id=job_id,
+            stage="repair",
+            requested_model=model_id,
+            compiled_model=image_model_id,
+        )
     if record.generation is None or record.generation.receipt is None:
         raise GenerationNotRunError(job_id)
     if record.critique is None or record.critique.result is None:
@@ -1194,7 +1232,7 @@ def execute_job_repair(
     if record.repair_count >= REPAIR_LIMIT:
         hold_request = _repair_planner_request(
             record,
-            model_id=model_id,
+            model_id=image_model_id,
             original_id=original_id,
             original_bytes=original_bytes,
             original_media=original_media,
@@ -1211,7 +1249,7 @@ def execute_job_repair(
 
     planner_request = _repair_planner_request(
         record,
-        model_id=model_id,
+        model_id=image_model_id,
         original_id=original_id,
         original_bytes=original_bytes,
         original_media=original_media,
@@ -1363,21 +1401,12 @@ def execute_job_repair(
         }
     )
     generated_file: tuple[str, bytes] | None = None
-    extra_output: tuple[str, bytes] | None = None
     if repair_receipt.output is not None and result.output_bytes is not None:
         generated_file = (
             output_filename(repair_receipt.output.media_type),
             result.output_bytes,
         )
-        extra_output = (
-            f"{repair_receipt.output.output_id}.{repair_receipt.output.media_type.lower()}",
-            result.output_bytes,
-        )
     _commit(store, updated, stage="repair", output=generated_file)
-    if extra_output is not None:
-        from app.runtime.artifacts import get_artifact_store
-
-        get_artifact_store().save_output(updated.job_id, extra_output[0], extra_output[1])
     return updated
 
 

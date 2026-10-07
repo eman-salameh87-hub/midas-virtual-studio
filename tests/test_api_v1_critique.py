@@ -96,10 +96,10 @@ def _client(critique: FakeCritiqueProvider | None = None) -> TestClient:
 
 def _seed_generated(client: TestClient) -> str:
     job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
-    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/compile", json={"model_id": CALLER_MODEL}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/compile", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/generate", json={}).status_code == 200
     return job_id
 
@@ -110,7 +110,7 @@ def test_end_to_end_critique_and_get_does_not_rerun() -> None:
     job_id = _seed_generated(client)
 
     res = client.post(
-        f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/critique", json={}
     )
     assert res.status_code == 200, res.text
     body = res.json()
@@ -141,7 +141,7 @@ def test_critique_requires_generation() -> None:
     client = _client()
     job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
     res = client.post(
-        f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/critique", json={}
     )
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "EYE_NOT_RUN"
@@ -152,14 +152,14 @@ def test_critique_owner_and_revision_mismatch() -> None:
     job_id = _seed_generated(client)
     res = client.post(
         f"/api/v1/jobs/{job_id}/critique",
-        json={"model_id": CALLER_MODEL},
+        json={},
         params={"owner_id": "wrong-owner"},
     )
     assert res.status_code == 403
     assert res.json()["error"]["code"] == "JOB_OWNER_MISMATCH"
     res = client.post(
         f"/api/v1/jobs/{job_id}/critique",
-        json={"model_id": CALLER_MODEL},
+        json={},
         params={"revision": 99},
     )
     assert res.status_code == 409
@@ -170,7 +170,7 @@ def test_critique_provider_failure_is_502() -> None:
     client = _client(FakeCritiqueProvider("wrong_job"))
     job_id = _seed_generated(client)
     res = client.post(
-        f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/critique", json={}
     )
     assert res.status_code == 502
     assert res.json()["error"]["code"] == "PROVIDER_FAILURE"
@@ -188,13 +188,13 @@ def test_uncertain_generation_blocks_critique() -> None:
     app.dependency_overrides[get_critique_provider] = lambda: FakeCritiqueProvider()
     client = TestClient(app)
     job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
-    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/compile", json={"model_id": CALLER_MODEL}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/compile", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/generate", json={}).status_code == 200
     res = client.post(
-        f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/critique", json={}
     )
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "GENERATION_NOT_READY"

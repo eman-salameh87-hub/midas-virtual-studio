@@ -97,10 +97,10 @@ def _seed_compiled(client: TestClient) -> str:
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
     job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
-    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/compile", json={"model_id": CALLER_MODEL}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/compile", json={}).status_code == 200
     return job_id
 
 

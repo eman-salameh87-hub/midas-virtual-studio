@@ -101,7 +101,7 @@ def test_live_http_job_eye_openrouter() -> None:
 
     executed = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert executed.status_code == 200, executed.text
     body = executed.json()

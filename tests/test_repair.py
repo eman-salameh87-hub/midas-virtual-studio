@@ -124,12 +124,12 @@ def _seed_critiqued(
 ) -> str:
     job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
     steps = [
-        ("eye", f"/api/v1/jobs/{job_id}/eye", {"model_id": CALLER_MODEL}),
-        ("brain", f"/api/v1/jobs/{job_id}/brain", {"model_id": CALLER_MODEL}),
-        ("stylist", f"/api/v1/jobs/{job_id}/stylist", {"model_id": CALLER_MODEL}),
-        ("compile", f"/api/v1/jobs/{job_id}/compile", {"model_id": CALLER_MODEL}),
+        ("eye", f"/api/v1/jobs/{job_id}/eye", {}),
+        ("brain", f"/api/v1/jobs/{job_id}/brain", {}),
+        ("stylist", f"/api/v1/jobs/{job_id}/stylist", {}),
+        ("compile", f"/api/v1/jobs/{job_id}/compile", {}),
         ("generate", f"/api/v1/jobs/{job_id}/generate", {}),
-        ("critique", f"/api/v1/jobs/{job_id}/critique", {"model_id": CALLER_MODEL}),
+        ("critique", f"/api/v1/jobs/{job_id}/critique", {}),
     ]
     for name, path, body in steps:
         assert client.post(path, json=body).status_code == 200
@@ -144,7 +144,7 @@ def test_a_critique_to_repair_plan() -> None:
     record = JOB_STORE.get(job_id)
     assert record is not None
     assert record.repair_count == 0
-    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert res.status_code == 200, res.text
     plan = res.json()["repair"]["plan"]
     assert plan["action"] == "fresh_render"
@@ -164,7 +164,7 @@ def test_b_c_d_named_defects_preserve_original() -> None:
     generation = FakeGenerationProvider()
     client = _client(generation=generation)
     job_id = _seed_critiqued(client)
-    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert res.status_code == 200, res.text
     body = res.json()["repair"]["plan"]
     assert body["original_reference_id"] == "ref-towel"
@@ -185,19 +185,19 @@ def test_f_g_h_repair_budget_two_then_hold() -> None:
     client = _client(critique=critique, generation=generation)
     job_id = _seed_critiqued(client)
     seed_dispatches = len(generation.requests)
-    first = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    first = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert first.status_code == 200, first.text
     assert first.json()["repair"]["repair_count"] == 1
     assert client.post(
-        f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/critique", json={}
     ).status_code == 200
-    second = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    second = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert second.status_code == 200
     assert second.json()["repair"]["repair_count"] == 2
     assert client.post(
-        f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/critique", json={}
     ).status_code == 200
-    third = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    third = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert third.status_code == 200, third.text
     body = third.json()
     assert body["state"] == "hold"
@@ -210,7 +210,7 @@ def test_f_g_h_repair_budget_two_then_hold() -> None:
 def test_i_repair_requires_critique() -> None:
     client = _client()
     job_id = _seed_critiqued(client, through="generate")
-    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "CRITIQUE_NOT_RUN"
 
@@ -218,7 +218,7 @@ def test_i_repair_requires_critique() -> None:
 def test_j_critique_ready_prevents_repair() -> None:
     client = _client(critique=FakeCritiqueProvider())
     job_id = _seed_critiqued(client)
-    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "REPAIR_NOT_REQUIRED"
 
@@ -231,7 +231,7 @@ def test_k_l_new_version_does_not_overwrite_previous() -> None:
     old_output = before.generation.receipt.output.output_id
     old_key = before.generation.operation.operation_key
     old_bytes = before.reference_bytes[old_output]
-    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert res.status_code == 200
     after = JOB_STORE.get(job_id)
     assert after is not None
@@ -241,7 +241,7 @@ def test_k_l_new_version_does_not_overwrite_previous() -> None:
     assert after.reference_bytes[old_output] == old_bytes
     assert after.generation_history
     assert after.generation_history[0].operation.operation_key == old_key
-    stored_old = get_artifact_store().get_artifact(job_id, "generations/1.json")
+    stored_old = get_artifact_store().get_artifact(job_id, "generations/01_initial.json")
     assert stored_old is not None
 
 
@@ -253,10 +253,10 @@ def test_m_n_o_rereview_unresolved_and_regression() -> None:
     job_id = _seed_critiqued(client)
     first_assessment = JOB_STORE.get(job_id).critique.result
     assert client.post(
-        f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/repair", json={}
     ).status_code == 200
     second = client.post(
-        f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/critique", json={}
     )
     assert second.status_code == 200
     assert len(critique.requests) == 2
@@ -267,10 +267,10 @@ def test_m_n_o_rereview_unresolved_and_regression() -> None:
     second_assessment = JOB_STORE.get(job_id).critique.result
     assert previous_defects_unresolved(first_assessment, second_assessment) == ["geometry"]
     assert client.post(
-        f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/repair", json={}
     ).status_code == 200
     third = client.post(
-        f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/critique", json={}
     )
     assert third.status_code == 200
     third_assessment = JOB_STORE.get(job_id).critique.result
@@ -283,8 +283,8 @@ def test_p_completed_repair_is_idempotent() -> None:
     client = _client(generation=generation)
     job_id = _seed_critiqued(client)
     seed_dispatches = len(generation.requests)
-    first = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
-    second = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    first = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
+    second = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert first.status_code == 200
     assert second.status_code == 200
     assert len(generation.requests) == seed_dispatches + 1
@@ -299,7 +299,7 @@ def test_q_r_restart_recovery_does_not_redispatch() -> None:
     job_id = _seed_critiqued(client)
     seed_dispatches = len(generation.requests)
     assert client.post(
-        f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL}
+        f"/api/v1/jobs/{job_id}/repair", json={}
     ).status_code == 200
     assert len(generation.requests) == seed_dispatches + 1
     JOB_STORE.clear()
@@ -311,7 +311,7 @@ def test_q_r_restart_recovery_does_not_redispatch() -> None:
     assert record.repair is not None
     assert record.repair.plan.operation is not None
     assert record.generation_history
-    again = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    again = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert again.status_code == 200
     assert len(generation.requests) == seed_dispatches + 1
 
@@ -321,7 +321,7 @@ def test_s_unsupported_local_edit_holds() -> None:
     client = _client(generation=generation, planner=FakeRepairPlanner(action="local_edit"))
     job_id = _seed_critiqued(client)
     seed_dispatches = len(generation.requests)
-    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["state"] == "hold"
@@ -335,7 +335,7 @@ def test_t_original_reference_remains_authoritative() -> None:
     generation = FakeGenerationProvider()
     client = _client(generation=generation)
     job_id = _seed_critiqued(client)
-    client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     request = generation.requests[-1]
     assert request.operation.reference_ids[0] == "ref-towel"
     compile_ids = [item.reference_id for item in request.compile.references]
@@ -347,7 +347,7 @@ def test_get_repair_never_dispatches() -> None:
     generation = FakeGenerationProvider()
     client = _client(generation=generation)
     job_id = _seed_critiqued(client)
-    client.post(f"/api/v1/jobs/{job_id}/repair", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/repair", json={})
     count = len(generation.requests)
     res = client.get(f"/api/v1/jobs/{job_id}/repair")
     assert res.status_code == 200
@@ -397,7 +397,6 @@ def test_synthetic_job_can_enter_repair_without_writing_repo_outputs() -> None:
     updated = execute_job_repair(
         JOB_STORE,
         job_id=job_id,
-        model_id=CALLER_MODEL,
         planner=FakeRepairPlanner(),
         provider=generation,
     )
@@ -410,3 +409,64 @@ def test_synthetic_job_can_enter_repair_without_writing_repo_outputs() -> None:
     assert updated.repair_count == 1
     assert generation.requests[seed_dispatches:]
     assert not (REPO_ROOT / "outputs" / job_id / "repair.json").exists()
+
+
+def test_repair_openapi_does_not_default_to_gpt_41() -> None:
+    client = _client()
+    schema = client.get("/openapi.json").json()
+    path = schema["paths"]["/api/v1/jobs/{job_id}/repair"]["post"]
+    description = path.get("description") or ""
+    assert "openai/gpt-4.1" not in description
+    assert "compiled" in description.lower()
+    body = path["requestBody"]["content"]["application/json"]["schema"]
+    if "$ref" in body:
+        ref = body["$ref"].rsplit("/", 1)[-1]
+        body = schema["components"]["schemas"][ref]
+    properties = body.get("properties") or {}
+    assert "model_id" in properties
+    assert properties["model_id"]["default"] == "google/gemini-3.1-flash-image"
+    job_id = _seed_critiqued(client)
+    rejected = client.post(
+        f"/api/v1/jobs/{job_id}/repair", json={"model_id": "openai/gpt-4.1"}
+    )
+    assert rejected.status_code == 422
+
+
+def test_repair_generation_uses_compile_image_model() -> None:
+    generation = FakeGenerationProvider()
+    client = _client(generation=generation)
+    job_id = _seed_critiqued(client)
+    record = JOB_STORE.get(job_id)
+    assert record is not None and record.engine is not None
+    compile_model = record.engine.result.model_id
+    assert compile_model != "openai/gpt-4.1"
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
+    assert res.status_code == 200, res.text
+    plan = res.json()["repair"]["plan"]
+    assert plan["operation"]["model_id"] == compile_model
+    assert generation.requests[-1].operation.model_id == compile_model
+
+
+def test_ordered_human_readable_artifact_names() -> None:
+    critique = FakeCritiqueProvider(violations=["repair_required", "repair_required"])
+    client = _client(critique=critique)
+    job_id = _seed_critiqued(client)
+    artifacts = get_artifact_store()
+    job_dir = artifacts.job_dir(job_id)
+    assert (job_dir / "generations" / "01_initial.png").is_file()
+    assert (job_dir / "critiques" / "01_critique_generation_01.json").is_file()
+    assert (job_dir / "output" / "current.png").is_file()
+    assert artifacts.get_artifact(job_id, "critiques/01_critique_generation_01.json")
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
+    assert res.status_code == 200, res.text
+    assert (job_dir / "generations" / "02_repair.png").is_file()
+    assert (job_dir / "repairs" / "01_repair_generation_01_to_02.json").is_file()
+    second = client.post(f"/api/v1/jobs/{job_id}/critique", json={})
+    assert second.status_code == 200, second.text
+    assert (job_dir / "critiques" / "02_critique_generation_02.json").is_file()
+    initial = artifacts.get_artifact(job_id, "generations/01_initial.json")
+    repaired = artifacts.get_artifact(job_id, "generations/02_repair.json")
+    assert initial is not None and repaired is not None
+    assert b'"operation_key"' in initial
+    assert b'"sequence_index": 1' in initial
+    assert b'"sequence_index": 2' in repaired

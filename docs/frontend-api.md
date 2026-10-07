@@ -84,14 +84,20 @@ does not re-run the provider.
 | Critique | `POST /api/v1/jobs/{job_id}/critique` | `GET /api/v1/jobs/{job_id}/critique` |
 | Repair | `POST /api/v1/jobs/{job_id}/repair` | `GET /api/v1/jobs/{job_id}/repair` |
 
-Execute bodies:
+Execute bodies are empty objects:
 
 ```json
-{ "model_id": "openai/gpt-4.1" }
+{}
 ```
 
-`model_id` is required and supplied by the caller. The backend does not pick a
-model.
+The caller does not select a model. The backend model policy chooses the
+stage model and records the effective `model_id` on the result/artifact.
+
+Planning stages (Eye, Brain, Stylist, Critique) default to
+`openai/gpt-4.1`. Compile persists the image model
+`google/gemini-3.1-flash-image` onto `EngineCompile`. Generate and Repair
+use that compiled image model. Extra `model_id` on a request is rejected
+with `422`.
 
 If a prior stage has not run, the API returns `409` with a stage-specific
 code (`EYE_NOT_RUN`, `BRAIN_NOT_RUN`, `STYLIST_NOT_RUN`, `ENGINE_NOT_RUN`,
@@ -143,12 +149,7 @@ Wrong owner: `403 JOB_OWNER_MISMATCH`.
 
 `POST /api/v1/jobs/{job_id}/critique`
 
-Body:
-
-```json
-{ "model_id": "openai/gpt-4.1" }
-```
-
+Body is an empty object: `{}`. The backend selects the Critique model.
 Inspects the original reference and generated image. Does not repair.
 
 `GET /api/v1/jobs/{job_id}/critique` returns the persisted assessment. It never
@@ -160,11 +161,9 @@ If generation is not completed or the image is missing: `409 GENERATION_NOT_READ
 
 `POST /api/v1/jobs/{job_id}/repair`
 
-Body:
-
-```json
-{ "model_id": "openai/gpt-4.1" }
-```
+Body is an empty object: `{}`. The repair planner is deterministic and does
+not call an LLM. Image generation uses `EngineCompile.model_id` already
+recorded on the job by compile. Do not send `model_id` on this request.
 
 Requires Critique `overall_result=repair_required`. Maximum two image repairs.
 Repair #3 is impossible. The original product reference stays attached on

@@ -101,19 +101,19 @@ def test_live_http_job_stylist_openrouter() -> None:
 
     eye = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert eye.status_code == 200, eye.text
 
     brain = client.post(
         f"/api/v1/jobs/{job_id}/brain",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert brain.status_code == 200, brain.text
 
     stylist = client.post(
         f"/api/v1/jobs/{job_id}/stylist",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     if stylist.status_code != 200:
         pytest.fail(

@@ -11,8 +11,25 @@ from app.contracts.job import Phase0JobContract
 from app.contracts.reference import ReferenceAsset
 from app.contracts.repair import RepairPlan
 from app.contracts.stylist import StylistPlan
+from app.runtime.model_policy import (
+    brain_model,
+    critique_model,
+    eye_model,
+    image_model,
+    stylist_model,
+)
 from app.runtime.state import JobError, JobRecord, JobStage, JobState
 from app.stages.eye import Readiness
+
+
+def _stage_schema_extra(stage: str, model_func: object) -> object:
+    def _extra(schema: dict) -> None:
+        model = model_func()  # type: ignore[operator]
+        schema.setdefault("properties", {}).setdefault("model_id", {})["default"] = model
+        schema["properties"]["model_id"]["example"] = model
+        schema["example"] = {"model_id": model}
+
+    return _extra
 
 
 class IntakeReferenceAsset(ReferenceAsset):
@@ -91,11 +108,20 @@ class CreateJobResponse(BaseModel):
 
 
 class ExecuteEyeRequest(BaseModel):
-    """Run Eye for an existing job. model_id is supplied by the caller."""
+    """Run Eye for an existing job.
 
-    model_config = ConfigDict(extra="forbid")
+    Model selection defaults to the configured Eye model (openai/gpt-4.1).
+    """
 
-    model_id: str = Field(min_length=1, examples=["openai/gpt-4.1"])
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_stage_schema_extra("eye", eye_model),
+    )
+
+    model_id: str = Field(
+        default_factory=eye_model,
+        description="Model ID to execute Eye stage. Default: openai/gpt-4.1.",
+    )
 
 
 class ExecuteEyeResponse(BaseModel):
@@ -121,11 +147,20 @@ class GetEyeResponse(BaseModel):
 
 
 class ExecuteBrainRequest(BaseModel):
-    """Run Brain for an existing job. model_id is supplied by the caller."""
+    """Run Brain for an existing job.
 
-    model_config = ConfigDict(extra="forbid")
+    Model selection defaults to the configured Brain model (openai/gpt-4.1).
+    """
 
-    model_id: str = Field(min_length=1, examples=["openai/gpt-4.1"])
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_stage_schema_extra("brain", brain_model),
+    )
+
+    model_id: str = Field(
+        default_factory=brain_model,
+        description="Model ID to execute Brain stage. Default: openai/gpt-4.1.",
+    )
 
 
 class BrainView(BaseModel):
@@ -159,11 +194,20 @@ class GetBrainResponse(BaseModel):
 
 
 class ExecuteStylistRequest(BaseModel):
-    """Run Stylist for an existing job. model_id is supplied by the caller."""
+    """Run Stylist for an existing job.
 
-    model_config = ConfigDict(extra="forbid")
+    Model selection defaults to the configured Stylist model (openai/gpt-4.1).
+    """
 
-    model_id: str = Field(min_length=1, examples=["openai/gpt-4.1"])
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_stage_schema_extra("stylist", stylist_model),
+    )
+
+    model_id: str = Field(
+        default_factory=stylist_model,
+        description="Model ID to execute Stylist stage. Default: openai/gpt-4.1.",
+    )
 
 
 class StylistView(BaseModel):
@@ -197,11 +241,21 @@ class GetStylistResponse(BaseModel):
 
 
 class ExecuteCompileRequest(BaseModel):
-    """Run Engine compile for an existing job. model_id is supplied by the caller."""
+    """Run Engine compile for an existing job.
 
-    model_config = ConfigDict(extra="forbid")
+    Selects and persists the image model for downstream Generation and Repair.
+    Default: google/gemini-3.1-flash-image.
+    """
 
-    model_id: str = Field(min_length=1, examples=["caller-supplied-model"])
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_stage_schema_extra("compile", image_model),
+    )
+
+    model_id: str = Field(
+        default_factory=image_model,
+        description="Image model ID to compile. Default: google/gemini-3.1-flash-image.",
+    )
 
 
 class EngineView(BaseModel):
@@ -235,12 +289,21 @@ class GetCompileResponse(BaseModel):
 
 
 class ExecuteGenerateRequest(BaseModel):
-    """Dispatch generation for a persisted EngineCompile. No model selection.
+    """Dispatch generation for a persisted EngineCompile.
 
-    Send an empty JSON object. The compiled model_id is already on the job.
+    The model_id must match the compiled image model.
+    Default: google/gemini-3.1-flash-image.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_stage_schema_extra("generate", image_model),
+    )
+
+    model_id: str = Field(
+        default_factory=image_model,
+        description="Image model ID for generation; must match compiled model. Default: google/gemini-3.1-flash-image.",
+    )
 
 
 class GenerationView(BaseModel):
@@ -280,11 +343,20 @@ class GetGenerateResponse(BaseModel):
 
 
 class ExecuteCritiqueRequest(BaseModel):
-    """Run Critique · assess for a completed generation. model_id is supplied by the caller."""
+    """Run Critique · assess for a completed generation.
 
-    model_config = ConfigDict(extra="forbid")
+    Model selection defaults to the configured Critique model (openai/gpt-4.1).
+    """
 
-    model_id: str = Field(min_length=1, examples=["openai/gpt-4.1"])
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_stage_schema_extra("critique", critique_model),
+    )
+
+    model_id: str = Field(
+        default_factory=critique_model,
+        description="Model ID to execute Critique stage. Default: openai/gpt-4.1.",
+    )
 
 
 class CritiqueView(BaseModel):
@@ -318,11 +390,21 @@ class GetCritiqueResponse(BaseModel):
 
 
 class ExecuteRepairRequest(BaseModel):
-    """Run bounded Critique · repair. model_id is supplied by the caller."""
+    """Dispatch one bounded repair.
 
-    model_config = ConfigDict(extra="forbid")
+    Image generation uses the compiled image model and must match it.
+    Default: google/gemini-3.1-flash-image.
+    """
 
-    model_id: str = Field(min_length=1, examples=["openai/gpt-4.1"])
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_stage_schema_extra("repair", image_model),
+    )
+
+    model_id: str = Field(
+        default_factory=image_model,
+        description="Image model ID for repair generation; must match compiled model. Default: google/gemini-3.1-flash-image.",
+    )
 
 
 class RepairView(BaseModel):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -22,7 +23,12 @@ from app.contracts.job import Phase0JobContract
 from app.contracts.repair import RepairPlan
 from app.contracts.stylist import StylistPlan
 from app.providers.brain import BrainEvidenceRef
-from app.runtime.artifacts import ArtifactStore, get_artifact_store, output_filename
+from app.runtime.artifacts import (
+    ArtifactStore,
+    generation_artifact_name,
+    get_artifact_store,
+    output_filename,
+)
 from app.runtime.state import (
     BrainInputMetadata,
     EngineInputMetadata,
@@ -337,7 +343,14 @@ def _load_generation(
             receipt = GenerationReceipt.model_validate(payload.get("receipt"))
         status = payload.get("status") or (receipt.status if receipt else "claimed")
         if receipt is not None and receipt.output is not None:
-            _load_generation_bytes(artifacts, job_id, receipt, reference_bytes)
+            _load_generation_bytes(
+                artifacts,
+                job_id,
+                receipt,
+                reference_bytes,
+                artifact_filename=payload.get("artifact_filename"),
+                sequence_index=payload.get("sequence_index"),
+            )
         return StoredGeneration(
             operation=operation,
             receipt=receipt,
@@ -353,15 +366,32 @@ def _load_generation_bytes(
     job_id: str,
     receipt: GenerationReceipt,
     reference_bytes: dict[str, bytes],
+    *,
+    artifact_filename: object = None,
+    sequence_index: object = None,
 ) -> None:
     if receipt.output is None:
         return
     output = receipt.output
-    names = (
-        f"output/{output.output_id}.{output.media_type.lower()}",
-        f"output/{output_filename(output.media_type)}",
+    ext = output.media_type.lower()
+    names: list[str] = []
+    if isinstance(artifact_filename, str) and artifact_filename.strip():
+        names.append(f"generations/{Path(artifact_filename).name}")
+    if isinstance(sequence_index, int) and 1 <= sequence_index <= 3:
+        names.append(generation_artifact_name(sequence_index, output.media_type))
+    names.extend(
+        (
+            f"output/{output.output_id}.{ext}",
+            f"generations/{output.output_id}.{ext}",
+            f"output/current.{ext}",
+            f"output/{output_filename(output.media_type)}",
+        )
     )
+    seen: set[str] = set()
     for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
         data = artifacts.get_artifact(job_id, name)
         if data:
             reference_bytes[output.output_id] = data
@@ -379,17 +409,19 @@ def _load_generation_history(
 ) -> list[StoredGeneration]:
     history: list[StoredGeneration] = []
     current_key = current.operation.operation_key if current is not None else None
-    for index in range(1, 4):
-        payload = _read_json(artifacts, job_id, f"generations/{index}.json")
-        if payload is None:
-            continue
+    seen_keys: set[str] = set()
+    for _index, payload in _iter_generation_payloads(artifacts, job_id):
         try:
             stored = _stored_generation_from_payload(payload, artifacts, job_id, reference_bytes)
         except (ValidationError, TypeError, ValueError):
-            logger.warning("skipping generation history %s for job %s", index, job_id, exc_info=True)
+            logger.warning("skipping generation history for job %s", job_id, exc_info=True)
             continue
-        if current_key and stored.operation.operation_key == current_key:
+        key = stored.operation.operation_key
+        if current_key and key == current_key:
             continue
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
         history.append(stored)
     return history
 
@@ -406,7 +438,14 @@ def _stored_generation_from_payload(
         receipt = GenerationReceipt.model_validate(payload.get("receipt"))
     status = payload.get("status") or (receipt.status if receipt else "claimed")
     if receipt is not None:
-        _load_generation_bytes(artifacts, job_id, receipt, reference_bytes)
+        _load_generation_bytes(
+            artifacts,
+            job_id,
+            receipt,
+            reference_bytes,
+            artifact_filename=payload.get("artifact_filename"),
+            sequence_index=payload.get("sequence_index"),
+        )
     return StoredGeneration(operation=operation, receipt=receipt, status=status)
 
 
@@ -416,7 +455,7 @@ def _load_repairs(
     reference_bytes: dict[str, bytes],
 ) -> tuple[list[StoredRepair], StoredRepair | None]:
     found: list[StoredRepair] = []
-    for name in ("repairs/1.json", "repairs/2.json", "repairs/hold.json", "repair.json"):
+    for name in _repair_artifact_candidates(artifacts, job_id):
         payload = _read_json(artifacts, job_id, name)
         if payload is None:
             continue
@@ -428,7 +467,13 @@ def _load_repairs(
             logger.warning("skipping repair artifact %s for job %s", name, job_id, exc_info=True)
             continue
         if plan.receipt is not None:
-            _load_generation_bytes(artifacts, job_id, plan.receipt, reference_bytes)
+            _load_generation_bytes(
+                artifacts,
+                job_id,
+                plan.receipt,
+                reference_bytes,
+                sequence_index=payload.get("result_generation_index"),
+            )
         if not any(
             item.plan.repair_count == stored.plan.repair_count
             and item.plan.critique_generation_output_id
@@ -436,6 +481,7 @@ def _load_repairs(
             for item in found
         ):
             found.append(stored)
+    found.sort(key=lambda item: item.plan.repair_count)
     latest = None
     latest_payload = _read_json(artifacts, job_id, "repair.json")
     if latest_payload is not None:
@@ -504,6 +550,71 @@ def _evidence(
         )
         for item in contract.references
     ]
+
+
+def _list_dir(artifacts: ArtifactStore, job_id: str, directory: str) -> list[str]:
+    lister = getattr(artifacts, "list_artifact_names", None)
+    if not callable(lister):
+        return []
+    try:
+        return list(lister(job_id, directory))
+    except (TypeError, ValueError):
+        return []
+
+
+def _iter_generation_payloads(
+    artifacts: ArtifactStore, job_id: str
+) -> list[tuple[int, dict[str, Any]]]:
+    indexed: list[tuple[int, dict[str, Any]]] = []
+    seen_files: set[str] = set()
+    names = _list_dir(artifacts, job_id, "generations")
+    fallback = [f"{index}.json" for index in range(1, 4)] + [
+        "01_initial.json",
+        "02_repair.json",
+        "03_repair.json",
+    ]
+    for name in names + fallback:
+        if not name.endswith(".json") or name in seen_files:
+            continue
+        seen_files.add(name)
+        payload = _read_json(artifacts, job_id, f"generations/{name}")
+        if payload is None:
+            continue
+        sequence = payload.get("sequence_index")
+        if not isinstance(sequence, int):
+            stem = name.rsplit(".", 1)[0]
+            if stem[:2].isdigit():
+                sequence = int(stem[:2])
+            elif stem.isdigit():
+                sequence = int(stem)
+            else:
+                sequence = 0
+        if "sequence_index" not in payload:
+            payload["sequence_index"] = sequence
+        indexed.append((sequence, payload))
+    indexed.sort(key=lambda item: item[0])
+    return indexed
+
+
+def _repair_artifact_candidates(artifacts: ArtifactStore, job_id: str) -> list[str]:
+    names = [f"repairs/{name}" for name in _list_dir(artifacts, job_id, "repairs")]
+    names.extend(
+        (
+            "repairs/01_repair_generation_01_to_02.json",
+            "repairs/02_repair_generation_02_to_03.json",
+            "repairs/1.json",
+            "repairs/2.json",
+            "repairs/hold.json",
+        )
+    )
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in names:
+        if not name.endswith(".json") or name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
 
 
 def _read_json(artifacts: ArtifactStore, job_id: str, name: str) -> dict[str, Any] | None:

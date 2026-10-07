@@ -8,6 +8,7 @@ from app.contracts.job import Phase0JobContract
 from app.main import app
 from app.providers.fake_brain import FakeBrainProvider, plan_for
 from app.providers.fake_eye import FakeEyeProvider
+from app.runtime.model_policy import brain_model
 from app.runtime.state import JOB_STORE
 from app.stages.brain import build_brain_input
 from tests.png_bytes import PNG_B64, PNG_HASH
@@ -96,7 +97,7 @@ def _create_job(client: TestClient) -> str:
 def _run_eye(client: TestClient, job_id: str) -> None:
     response = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert response.status_code == 200, response.text
 
@@ -104,7 +105,7 @@ def _run_eye(client: TestClient, job_id: str) -> None:
 def test_post_brain_unknown_job_returns_404() -> None:
     response = _client().post(
         "/api/v1/jobs/missing-job/brain",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert response.status_code == 404
     assert response.json() == {
@@ -122,7 +123,7 @@ def test_post_brain_before_eye_returns_conflict() -> None:
 
     response = client.post(
         f"/api/v1/jobs/{job_id}/brain",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
 
     assert response.status_code == 409
@@ -140,7 +141,7 @@ def test_post_brain_uses_stored_contract_and_eye_without_resend() -> None:
         _run_eye(client, job_id)
         response = client.post(
             f"/api/v1/jobs/{job_id}/brain",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
     finally:
         app.dependency_overrides[get_brain_provider] = lambda: FakeBrainProvider()
@@ -151,17 +152,17 @@ def test_post_brain_uses_stored_contract_and_eye_without_resend() -> None:
     assert body["revision"] == 1
     assert body["stage"] == "brain"
     assert body["state"] == "ready"
-    assert body["brain"]["model_id"] == CALLER_MODEL
+    assert body["brain"]["model_id"] == brain_model()
     assert body["brain"]["execution_status"] == "completed"
     assert body["brain"]["plan"]["contract_id"] == "contract-towel-1"
     assert body["brain"]["plan"]["observation_contract_id"] == "contract-towel-1"
     assert body["brain"]["plan"]["mode"] == "fidelity-locked"
-    assert json.loads(response.request.content.decode()) == {"model_id": CALLER_MODEL}
+    assert json.loads(response.request.content.decode()) == {}
     assert "contract" not in json.loads(response.request.content.decode())
 
     assert len(provider.requests) == 1
     received = provider.requests[0]
-    assert received.model_id == CALLER_MODEL
+    assert received.model_id == brain_model()
     assert received.brain_input.job_id == job_id
     assert received.brain_input.contract == _contract()
     assert received.brain_input.observation.contract_id == "contract-towel-1"
@@ -177,7 +178,7 @@ def test_brain_result_is_persisted_on_the_same_job() -> None:
     _run_eye(client, job_id)
     posted = client.post(
         f"/api/v1/jobs/{job_id}/brain",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert posted.status_code == 200
 
@@ -185,7 +186,7 @@ def test_brain_result_is_persisted_on_the_same_job() -> None:
     assert stored is not None
     assert stored.observation is not None
     assert stored.brain is not None
-    assert stored.brain.model_id == CALLER_MODEL
+    assert stored.brain.model_id == brain_model()
     assert stored.brain.status == "completed"
     assert stored.brain.result is not None
     expected = plan_for(build_brain_input(stored))
@@ -202,7 +203,7 @@ def test_get_brain_returns_stored_result_without_rerun() -> None:
         _run_eye(client, job_id)
         posted = client.post(
             f"/api/v1/jobs/{job_id}/brain",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
         assert posted.status_code == 200
         stored_brain = posted.json()["brain"]
@@ -242,14 +243,14 @@ def test_brain_hold_uses_existing_readiness_reasons() -> None:
         job_id = _create_job(client)
         eye = client.post(
             f"/api/v1/jobs/{job_id}/eye",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
         assert eye.status_code == 200
         assert eye.json()["readiness"]["status"] == "hold"
 
         response = client.post(
             f"/api/v1/jobs/{job_id}/brain",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
     finally:
         app.dependency_overrides[get_eye_provider] = lambda: FakeEyeProvider()
@@ -267,12 +268,15 @@ def test_brain_hold_uses_existing_readiness_reasons() -> None:
 def test_caller_model_is_required_and_not_selected() -> None:
     from app.runtime.jobs import execute_job_brain
 
-    response = _client().post(
+    rejected = _client().post(
         "/api/v1/jobs/any/brain",
-        json={},
+        json={"model_id": "fake-model"},
     )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "INVALID_REQUEST"
+
+    missing = _client().post("/api/v1/jobs/any/brain", json={})
+    assert missing.status_code == 404
 
     assert inspect.signature(execute_job_brain).parameters["model_id"].default is inspect.Parameter.empty
     for module_name in (
@@ -299,7 +303,7 @@ def test_brain_provider_failure_hides_internals() -> None:
         _run_eye(client, job_id)
         response = client.post(
             f"/api/v1/jobs/{job_id}/brain",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
     finally:
         app.dependency_overrides[get_brain_provider] = lambda: FakeBrainProvider()
@@ -330,14 +334,14 @@ def test_end_to_end_job_eye_brain_persistence() -> None:
 
     eye = client.post(
         f"/api/v1/jobs/{job_id}/eye",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert eye.status_code == 200
     observation = eye.json()["observation"]
 
     brain = client.post(
         f"/api/v1/jobs/{job_id}/brain",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert brain.status_code == 200
     stored_brain = brain.json()["brain"]
@@ -364,7 +368,7 @@ def test_wrong_owner_cannot_execute_or_read_brain() -> None:
     denied = client.post(
         f"/api/v1/jobs/{job_id}/brain",
         params={"owner_id": "owner-2"},
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert denied.status_code == 403
     assert denied.json()["error"]["code"] == "JOB_OWNER_MISMATCH"
@@ -372,7 +376,7 @@ def test_wrong_owner_cannot_execute_or_read_brain() -> None:
     allowed = client.post(
         f"/api/v1/jobs/{job_id}/brain",
         params={"owner_id": "owner-1"},
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert allowed.status_code == 200
     blocked_get = client.get(
@@ -389,7 +393,7 @@ def test_brain_revision_mismatch_is_rejected() -> None:
     response = client.post(
         f"/api/v1/jobs/{job_id}/brain",
         params={"revision": 9},
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "REVISION_MISMATCH"
@@ -407,7 +411,7 @@ def test_invalid_provider_json_is_rejected() -> None:
         _run_eye(client, job_id)
         response = client.post(
             f"/api/v1/jobs/{job_id}/brain",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
     finally:
         app.dependency_overrides[get_brain_provider] = lambda: FakeBrainProvider()
@@ -431,7 +435,7 @@ def test_invalid_brain_schema_is_rejected() -> None:
         _run_eye(client, job_id)
         response = client.post(
             f"/api/v1/jobs/{job_id}/brain",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
     finally:
         app.dependency_overrides[get_brain_provider] = lambda: FakeBrainProvider()
@@ -469,7 +473,7 @@ def test_provider_failure_includes_openrouter_call_record() -> None:
         _run_eye(client, job_id)
         response = client.post(
             f"/api/v1/jobs/{job_id}/brain",
-            json={"model_id": CALLER_MODEL},
+            json={},
         )
     finally:
         app.dependency_overrides[get_brain_provider] = lambda: FakeBrainProvider()
@@ -493,7 +497,7 @@ def test_user_selected_count_remains_invariant() -> None:
     _run_eye(client, job_id)
     response = client.post(
         f"/api/v1/jobs/{job_id}/brain",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert response.status_code == 200
     plan = response.json()["brain"]["plan"]

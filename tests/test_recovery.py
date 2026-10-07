@@ -12,6 +12,7 @@ from app.api.jobs import (
     get_engine_compiler,
     get_eye_provider,
     get_generation_provider,
+    get_repair_planner,
     get_stylist_provider,
 )
 from app.main import app
@@ -20,6 +21,7 @@ from app.providers.fake_critique import FakeCritiqueProvider
 from app.providers.fake_engine import FakeEngineCompiler
 from app.providers.fake_eye import FakeEyeProvider
 from app.providers.fake_generation import FakeGenerationProvider
+from app.providers.fake_repair import FakeRepairPlanner
 from app.providers.fake_stylist import FakeStylistProvider
 from app.runtime.artifacts import FilesystemArtifactStore, get_artifact_store
 from app.runtime.events import job_event
@@ -103,18 +105,19 @@ def _client(
     app.dependency_overrides[get_engine_compiler] = lambda: FakeEngineCompiler()
     app.dependency_overrides[get_generation_provider] = lambda: generation or FakeGenerationProvider()
     app.dependency_overrides[get_critique_provider] = lambda: critique or FakeCritiqueProvider()
+    app.dependency_overrides[get_repair_planner] = lambda: FakeRepairPlanner()
     return TestClient(app)
 
 
 def _seed_through(client: TestClient, *, through: str) -> str:
     job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
     stages = [
-        ("eye", f"/api/v1/jobs/{job_id}/eye", {"model_id": CALLER_MODEL}),
-        ("brain", f"/api/v1/jobs/{job_id}/brain", {"model_id": CALLER_MODEL}),
-        ("stylist", f"/api/v1/jobs/{job_id}/stylist", {"model_id": CALLER_MODEL}),
-        ("compile", f"/api/v1/jobs/{job_id}/compile", {"model_id": CALLER_MODEL}),
+        ("eye", f"/api/v1/jobs/{job_id}/eye", {}),
+        ("brain", f"/api/v1/jobs/{job_id}/brain", {}),
+        ("stylist", f"/api/v1/jobs/{job_id}/stylist", {}),
+        ("compile", f"/api/v1/jobs/{job_id}/compile", {}),
         ("generate", f"/api/v1/jobs/{job_id}/generate", {}),
-        ("critique", f"/api/v1/jobs/{job_id}/critique", {"model_id": CALLER_MODEL}),
+        ("critique", f"/api/v1/jobs/{job_id}/critique", {}),
     ]
     for name, path, body in stages:
         assert client.post(path, json=body).status_code == 200
@@ -198,7 +201,7 @@ def test_restart_continuation_post_critique_without_rerunning_generation() -> No
     assert len(generation.requests) == 1
     _fresh_recover(job_id)
 
-    res = client.post(f"/api/v1/jobs/{job_id}/critique", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/critique", json={})
     assert res.status_code == 200, res.text
     assert res.json()["stage"] == "critique"
     assert len(generation.requests) == 1
@@ -335,3 +338,56 @@ def test_existing_outputs_job_is_recoverable_without_provider_calls() -> None:
     reconstruct_job_record(REAL_JOB_ID, artifacts)
     assert generation.requests == []
     assert (job_dir / "generation.json").is_file()
+
+
+def test_recovery_preserves_repair_order_and_latest_generation() -> None:
+    generation = FakeGenerationProvider()
+    critique = FakeCritiqueProvider("repair_required")
+    client = _client(generation=generation, critique=critique)
+    job_id = _seed_through(client, through="critique")
+    before = JOB_STORE.get(job_id)
+    assert before is not None
+    initial_key = before.generation.operation.operation_key
+    initial_output = before.generation.receipt.output.output_id
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
+    assert res.status_code == 200, res.text
+    after = JOB_STORE.get(job_id)
+    assert after is not None
+    repaired_key = after.generation.operation.operation_key
+    repaired_output = after.generation.receipt.output.output_id
+    repaired_receipt = after.generation.receipt.provider_receipt_id
+    assert repaired_key != initial_key
+    record = _fresh_recover(job_id)
+    assert record.repair_count == 1
+    assert record.generation is not None
+    assert record.generation.operation.operation_key == repaired_key
+    assert record.generation.receipt is not None
+    assert record.generation.receipt.output.output_id == repaired_output
+    assert record.generation.receipt.provider_receipt_id == repaired_receipt
+    assert record.generation_history
+    assert record.generation_history[0].operation.operation_key == initial_key
+    assert record.generation_history[0].receipt.output.output_id == initial_output
+    assert initial_output in record.reference_bytes
+    assert repaired_output in record.reference_bytes
+    artifacts = get_artifact_store()
+    job_dir = artifacts.job_dir(job_id)
+    assert (job_dir / "generations" / "01_initial.png").is_file()
+    assert (job_dir / "generations" / "02_repair.png").is_file()
+
+
+def test_recovery_reads_legacy_generation_json_names() -> None:
+    client = _client()
+    job_id = _seed_through(client, through="generate")
+    artifacts = get_artifact_store()
+    job_dir = artifacts.job_dir(job_id)
+    payload = artifacts.get_artifact(job_id, "generations/01_initial.json")
+    assert payload is not None
+    artifacts._write_bytes(job_dir / "generations" / "1.json", payload)
+    (job_dir / "generations" / "01_initial.json").unlink()
+    png = job_dir / "generations" / "01_initial.png"
+    if png.is_file():
+        png.unlink()
+    record = _fresh_recover(job_id)
+    assert record.generation is not None
+    assert record.generation.receipt is not None
+    assert record.generation.receipt.output is not None

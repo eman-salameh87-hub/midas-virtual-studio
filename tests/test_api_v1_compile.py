@@ -12,6 +12,7 @@ from app.providers.fake_brain import FakeBrainProvider
 from app.providers.fake_engine import FakeEngineCompiler
 from app.providers.fake_eye import FakeEyeProvider
 from app.providers.fake_stylist import FakeStylistProvider
+from app.runtime.model_policy import image_model
 from app.runtime.state import JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
 
@@ -95,9 +96,9 @@ def _seed_styled(client: TestClient) -> str:
     res = client.post("/api/v1/jobs", json={"contract": contract_data})
     assert res.status_code == 200, res.text
     job_id = res.json()["job_id"]
-    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={"model_id": CALLER_MODEL}).status_code == 200
-    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={"model_id": CALLER_MODEL}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
     return job_id
 
 
@@ -106,13 +107,13 @@ def test_post_and_get_job_compile() -> None:
     client = _client(compiler)
     job_id = _seed_styled(client)
 
-    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={})
     assert res.status_code == 200, res.text
     data = res.json()
     assert data["job_id"] == job_id
     assert data["stage"] == "compile"
     assert data["state"] == "ready"
-    assert data["engine"]["model_id"] == CALLER_MODEL
+    assert data["engine"]["model_id"] == image_model()
     assert data["engine"]["execution_status"] == "completed"
     assert data["engine"]["compile"]["status"] == "ready"
     assert data["engine"]["compile"]["exact_prompt"]
@@ -138,7 +139,7 @@ def test_compile_owner_and_revision_mismatch() -> None:
     job_id = _seed_styled(client)
     res = client.post(
         f"/api/v1/jobs/{job_id}/compile",
-        json={"model_id": CALLER_MODEL},
+        json={},
         params={"owner_id": "wrong-owner"},
     )
     assert res.status_code == 403
@@ -146,7 +147,7 @@ def test_compile_owner_and_revision_mismatch() -> None:
 
     res = client.post(
         f"/api/v1/jobs/{job_id}/compile",
-        json={"model_id": CALLER_MODEL},
+        json={},
         params={"revision": 99},
     )
     assert res.status_code == 409
@@ -159,17 +160,17 @@ def test_compile_requires_prior_stages() -> None:
     contract_data["references"][0]["content_base64"] = PNG_B64
     job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
 
-    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "EYE_NOT_RUN"
 
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
-    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
+    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "BRAIN_NOT_RUN"
 
-    client.post(f"/api/v1/jobs/{job_id}/brain", json={"model_id": CALLER_MODEL})
-    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/brain", json={})
+    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "STYLIST_NOT_RUN"
 
@@ -193,12 +194,12 @@ def test_stylist_hold_blocks_compile_api() -> None:
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
     job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
-    client.post(f"/api/v1/jobs/{job_id}/brain", json={"model_id": CALLER_MODEL})
-    stylist = client.post(f"/api/v1/jobs/{job_id}/stylist", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
+    client.post(f"/api/v1/jobs/{job_id}/brain", json={})
+    stylist = client.post(f"/api/v1/jobs/{job_id}/stylist", json={})
     assert stylist.status_code == 200
     assert stylist.json()["state"] == "hold"
 
-    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/compile", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "ENGINE_NOT_READY"

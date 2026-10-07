@@ -7,6 +7,7 @@ from app.main import app
 from app.providers.fake_brain import FakeBrainProvider
 from app.providers.fake_eye import FakeEyeProvider
 from app.providers.fake_stylist import FakeStylistProvider
+from app.runtime.model_policy import stylist_model
 from app.runtime.state import JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
 
@@ -90,10 +91,10 @@ def _seed_job(client: TestClient) -> str:
     assert res.status_code == 200, res.text
     job_id = res.json()["job_id"]
 
-    eye_res = client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    eye_res = client.post(f"/api/v1/jobs/{job_id}/eye", json={})
     assert eye_res.status_code == 200, eye_res.text
 
-    brain_res = client.post(f"/api/v1/jobs/{job_id}/brain", json={"model_id": CALLER_MODEL})
+    brain_res = client.post(f"/api/v1/jobs/{job_id}/brain", json={})
     assert brain_res.status_code == 200, brain_res.text
 
     return job_id
@@ -106,14 +107,14 @@ def test_post_and_get_job_stylist() -> None:
     # POST stylist
     res = client.post(
         f"/api/v1/jobs/{job_id}/stylist",
-        json={"model_id": CALLER_MODEL},
+        json={},
     )
     assert res.status_code == 200, res.text
     data = res.json()
     assert data["job_id"] == job_id
     assert data["stage"] == "stylist"
     assert data["state"] == "ready"
-    assert data["stylist"]["model_id"] == CALLER_MODEL
+    assert data["stylist"]["model_id"] == stylist_model()
     assert data["stylist"]["execution_status"] == "completed"
     assert data["stylist"]["plan"]["product_role"] == "hero"
 
@@ -132,7 +133,7 @@ def test_post_and_get_job_stylist() -> None:
 
 def test_stylist_not_found() -> None:
     client = _client()
-    res = client.post("/api/v1/jobs/missing-job/stylist", json={"model_id": CALLER_MODEL})
+    res = client.post("/api/v1/jobs/missing-job/stylist", json={})
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "JOB_NOT_FOUND"
 
@@ -142,7 +143,7 @@ def test_stylist_owner_mismatch() -> None:
     job_id = _seed_job(client)
     res = client.post(
         f"/api/v1/jobs/{job_id}/stylist",
-        json={"model_id": CALLER_MODEL},
+        json={},
         params={"owner_id": "wrong-owner"},
     )
     assert res.status_code == 403
@@ -154,7 +155,7 @@ def test_stylist_revision_mismatch() -> None:
     job_id = _seed_job(client)
     res = client.post(
         f"/api/v1/jobs/{job_id}/stylist",
-        json={"model_id": CALLER_MODEL},
+        json={},
         params={"revision": 99},
     )
     assert res.status_code == 409
@@ -167,9 +168,9 @@ def test_stylist_brain_not_run() -> None:
     contract_data["references"][0]["content_base64"] = PNG_B64
     res = client.post("/api/v1/jobs", json={"contract": contract_data})
     job_id = res.json()["job_id"]
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={"model_id": CALLER_MODEL})
+    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
 
-    res = client.post(f"/api/v1/jobs/{job_id}/stylist", json={"model_id": CALLER_MODEL})
+    res = client.post(f"/api/v1/jobs/{job_id}/stylist", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "BRAIN_NOT_RUN"
 
