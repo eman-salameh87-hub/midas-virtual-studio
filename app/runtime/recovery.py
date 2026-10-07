@@ -1,0 +1,593 @@
+"""Local/dev JobRecord recovery from the filesystem artifact store.
+
+This is not Vault persistence and is not a database. It reconstructs
+in-memory JobState from outputs/<job_id>/ after a process restart.
+It does not rerun providers and does not rewrite artifacts.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from pydantic import ValidationError
+
+from app.contracts.brain import BrainPlan
+from app.contracts.critique import CritiqueAssessment
+from app.contracts.engine import EngineCompile
+from app.contracts.eye import EyeObservation
+from app.contracts.generation import GenerationOperation, GenerationReceipt
+from app.contracts.job import Phase0JobContract
+from app.contracts.repair import RepairPlan
+from app.contracts.stylist import StylistPlan
+from app.providers.brain import BrainEvidenceRef
+from app.runtime.artifacts import ArtifactStore, get_artifact_store, output_filename
+from app.runtime.state import (
+    BrainInputMetadata,
+    EngineInputMetadata,
+    JobError,
+    JobRecord,
+    JobStage,
+    JobState,
+    JobStore,
+    StoredBrain,
+    StoredCritique,
+    StoredEngine,
+    StoredGeneration,
+    StoredRepair,
+    StoredStylist,
+    StylistInputMetadata,
+)
+from app.stages.eye import Readiness, build_eye_input
+
+logger = logging.getLogger("app.runtime.recovery")
+
+_STAGE_ORDER: tuple[JobStage, ...] = (
+    "intake",
+    "eye",
+    "brain",
+    "stylist",
+    "compile",
+    "generate",
+    "critique",
+    "repair",
+)
+
+
+def recover_jobs_from_artifacts(
+    job_store: JobStore,
+    artifacts: ArtifactStore | None = None,
+) -> list[str]:
+    """Load completed jobs from disk into JobStore. Skip jobs already in memory."""
+
+    store = artifacts or get_artifact_store()
+    recovered: list[str] = []
+    for job_id in store.list_job_ids():
+        if job_store.get(job_id) is not None:
+            continue
+        try:
+            record = reconstruct_job_record(job_id, store)
+        except Exception:
+            logger.warning("skipping malformed job %s during recovery", job_id, exc_info=True)
+            continue
+        if record is None:
+            continue
+        job_store.save(record)
+        recovered.append(job_id)
+    return recovered
+
+
+def reconstruct_job_record(
+    job_id: str, artifacts: ArtifactStore
+) -> JobRecord | None:
+    """Rebuild one JobRecord from artifacts. None if job.json is missing."""
+
+    raw_job = _read_json(artifacts, job_id, "job.json")
+    if raw_job is None:
+        logger.warning("skipping job %s: job.json is missing or invalid", job_id)
+        return None
+    try:
+        contract = Phase0JobContract.model_validate(raw_job.get("contract"))
+        owner_id = str(raw_job.get("owner_id") or contract.owner_id)
+        revision = int(raw_job.get("revision") or contract.revision)
+        hold = (
+            Readiness.model_validate(raw_job["hold"])
+            if raw_job.get("hold") is not None
+            else None
+        )
+        error = (
+            JobError.model_validate(raw_job["error"])
+            if raw_job.get("error") is not None
+            else None
+        )
+    except (ValidationError, TypeError, ValueError):
+        logger.warning("skipping job %s: job.json failed contract validation", job_id, exc_info=True)
+        return None
+
+    persisted_job_id = str(raw_job.get("job_id") or job_id)
+    if persisted_job_id != job_id:
+        logger.warning(
+            "skipping job %s: job.json job_id %s does not match directory",
+            job_id,
+            persisted_job_id,
+        )
+        return None
+
+    reference_bytes = _load_input_bytes(artifacts, job_id, contract)
+    eye_model_id, eye_input, observation, readiness = _load_eye(
+        artifacts, job_id, contract
+    )
+    brain = _load_brain(artifacts, job_id, contract, observation, reference_bytes)
+    stylist = _load_stylist(artifacts, job_id, contract, brain, reference_bytes)
+    engine = _load_compile(artifacts, job_id, contract, brain, stylist, reference_bytes)
+    generation = _load_generation(artifacts, job_id, reference_bytes)
+    critique = _load_critique(artifacts, job_id)
+    repairs, latest_repair = _load_repairs(artifacts, job_id, reference_bytes)
+    generation_history = _load_generation_history(
+        artifacts, job_id, reference_bytes, generation
+    )
+    repair_count = 0
+    raw_count = raw_job.get("repair_count")
+    if isinstance(raw_count, int) and 0 <= raw_count <= 2:
+        repair_count = raw_count
+    elif latest_repair is not None:
+        repair_count = min(latest_repair.plan.repair_count, 2)
+
+    stage = _effective_stage(
+        _as_stage(raw_job.get("stage")),
+        observation is not None,
+        brain is not None,
+        stylist is not None,
+        engine is not None,
+        generation is not None,
+        critique is not None,
+        latest_repair is not None,
+    )
+    state = _effective_state(
+        _as_state(raw_job.get("state")),
+        generation,
+        critique,
+        latest_repair,
+    )
+    status = _as_state(raw_job.get("status")) or state
+    try:
+        return JobRecord(
+            job_id=job_id,
+            owner_id=owner_id,
+            contract=contract,
+            revision=revision,
+            stage=stage,
+            state=state,
+            status=status,
+            hold=hold,
+            error=error,
+            eye_model_id=eye_model_id,
+            eye_input=eye_input,
+            observation=observation,
+            readiness=readiness,
+            brain=brain,
+            stylist=stylist,
+            engine=engine,
+            generation=generation,
+            critique=critique,
+            repair=latest_repair,
+            repairs=repairs,
+            generation_history=generation_history,
+            repair_count=repair_count,
+            events=[],
+            reference_bytes=reference_bytes,
+        )
+    except (ValidationError, TypeError, ValueError):
+        logger.warning("skipping job %s: reconstructed JobRecord is invalid", job_id, exc_info=True)
+        return None
+
+
+def _load_eye(
+    artifacts: ArtifactStore,
+    job_id: str,
+    contract: Phase0JobContract,
+) -> tuple[str | None, Any, EyeObservation | None, Readiness | None]:
+    payload = _read_json(artifacts, job_id, "eye.json")
+    if payload is None:
+        return None, None, None, None
+    try:
+        observation = EyeObservation.model_validate(payload.get("observation"))
+        readiness = Readiness.model_validate(payload.get("readiness"))
+        eye_input = build_eye_input(
+            contract, [item.reference_id for item in contract.references]
+        )
+        model_id = payload.get("model_id")
+        return (
+            str(model_id) if isinstance(model_id, str) and model_id.strip() else None,
+            eye_input,
+            observation,
+            readiness,
+        )
+    except (ValidationError, TypeError, ValueError):
+        logger.warning("skipping eye artifact for job %s", job_id, exc_info=True)
+        return None, None, None, None
+
+
+def _load_brain(
+    artifacts: ArtifactStore,
+    job_id: str,
+    contract: Phase0JobContract,
+    observation: EyeObservation | None,
+    reference_bytes: dict[str, bytes],
+) -> StoredBrain | None:
+    payload = _read_json(artifacts, job_id, "brain.json")
+    if payload is None:
+        return None
+    try:
+        plan = BrainPlan.model_validate(payload.get("plan"))
+        model_id = _required_model_id(payload.get("model_id"))
+        status = payload.get("execution_status") or "completed"
+        metadata = None
+        if observation is not None:
+            metadata = BrainInputMetadata(
+                job_id=job_id,
+                contract_id=contract.contract_id,
+                revision=contract.revision,
+                observation_contract_id=plan.observation_contract_id,
+                observation_revision=plan.observation_revision,
+                evidence=_evidence(contract, reference_bytes),
+            )
+        return StoredBrain(
+            model_id=model_id,
+            input=metadata,
+            result=plan,
+            status=status if status in {"completed", "failed"} else "completed",
+        )
+    except (ValidationError, TypeError, ValueError):
+        logger.warning("skipping brain artifact for job %s", job_id, exc_info=True)
+        return None
+
+
+def _load_stylist(
+    artifacts: ArtifactStore,
+    job_id: str,
+    contract: Phase0JobContract,
+    brain: StoredBrain | None,
+    reference_bytes: dict[str, bytes],
+) -> StoredStylist | None:
+    payload = _read_json(artifacts, job_id, "stylist.json")
+    if payload is None:
+        return None
+    try:
+        plan = StylistPlan.model_validate(payload.get("plan"))
+        model_id = _required_model_id(payload.get("model_id"))
+        status = payload.get("execution_status") or "completed"
+        metadata = None
+        if brain is not None and brain.result is not None:
+            metadata = StylistInputMetadata(
+                job_id=job_id,
+                contract_id=contract.contract_id,
+                revision=contract.revision,
+                brain_contract_id=brain.result.contract_id,
+                brain_revision=brain.result.contract_revision,
+                evidence=_evidence(contract, reference_bytes),
+            )
+        return StoredStylist(
+            model_id=model_id,
+            input=metadata,
+            result=plan,
+            status=status if status in {"completed", "failed"} else "completed",
+        )
+    except (ValidationError, TypeError, ValueError):
+        logger.warning("skipping stylist artifact for job %s", job_id, exc_info=True)
+        return None
+
+
+def _load_compile(
+    artifacts: ArtifactStore,
+    job_id: str,
+    contract: Phase0JobContract,
+    brain: StoredBrain | None,
+    stylist: StoredStylist | None,
+    reference_bytes: dict[str, bytes],
+) -> StoredEngine | None:
+    payload = _read_json(artifacts, job_id, "compile.json")
+    if payload is None:
+        return None
+    try:
+        compile_artifact = EngineCompile.model_validate(payload.get("compile"))
+        model_id = _required_model_id(payload.get("model_id") or compile_artifact.model_id)
+        status = payload.get("execution_status") or "completed"
+        metadata = None
+        if (
+            brain is not None
+            and brain.result is not None
+            and stylist is not None
+            and stylist.result is not None
+        ):
+            metadata = EngineInputMetadata(
+                job_id=job_id,
+                contract_id=contract.contract_id,
+                revision=contract.revision,
+                brain_contract_id=brain.result.contract_id,
+                brain_revision=brain.result.contract_revision,
+                stylist_contract_id=stylist.result.contract_id,
+                stylist_revision=stylist.result.contract_revision,
+                evidence=_evidence(contract, reference_bytes),
+            )
+        return StoredEngine(
+            model_id=model_id,
+            input=metadata,
+            result=compile_artifact,
+            status=status if status in {"completed", "failed"} else "completed",
+        )
+    except (ValidationError, TypeError, ValueError):
+        logger.warning("skipping compile artifact for job %s", job_id, exc_info=True)
+        return None
+
+
+def _load_generation(
+    artifacts: ArtifactStore,
+    job_id: str,
+    reference_bytes: dict[str, bytes],
+) -> StoredGeneration | None:
+    payload = _read_json(artifacts, job_id, "generation.json")
+    if payload is None:
+        return None
+    try:
+        operation = GenerationOperation.model_validate(payload.get("operation"))
+        receipt = None
+        if payload.get("receipt") is not None:
+            receipt = GenerationReceipt.model_validate(payload.get("receipt"))
+        status = payload.get("status") or (receipt.status if receipt else "claimed")
+        if receipt is not None and receipt.output is not None:
+            _load_generation_bytes(artifacts, job_id, receipt, reference_bytes)
+        return StoredGeneration(
+            operation=operation,
+            receipt=receipt,
+            status=status,
+        )
+    except (ValidationError, TypeError, ValueError):
+        logger.warning("skipping generation artifact for job %s", job_id, exc_info=True)
+        return None
+
+
+def _load_generation_bytes(
+    artifacts: ArtifactStore,
+    job_id: str,
+    receipt: GenerationReceipt,
+    reference_bytes: dict[str, bytes],
+) -> None:
+    if receipt.output is None:
+        return
+    output = receipt.output
+    names = (
+        f"output/{output.output_id}.{output.media_type.lower()}",
+        f"output/{output_filename(output.media_type)}",
+    )
+    for name in names:
+        data = artifacts.get_artifact(job_id, name)
+        if data:
+            reference_bytes[output.output_id] = data
+            return
+    data = artifacts.get_output(job_id, output_filename(output.media_type))
+    if data and output.output_id not in reference_bytes:
+        reference_bytes[output.output_id] = data
+
+
+def _load_generation_history(
+    artifacts: ArtifactStore,
+    job_id: str,
+    reference_bytes: dict[str, bytes],
+    current: StoredGeneration | None,
+) -> list[StoredGeneration]:
+    history: list[StoredGeneration] = []
+    current_key = current.operation.operation_key if current is not None else None
+    for index in range(1, 4):
+        payload = _read_json(artifacts, job_id, f"generations/{index}.json")
+        if payload is None:
+            continue
+        try:
+            stored = _stored_generation_from_payload(payload, artifacts, job_id, reference_bytes)
+        except (ValidationError, TypeError, ValueError):
+            logger.warning("skipping generation history %s for job %s", index, job_id, exc_info=True)
+            continue
+        if current_key and stored.operation.operation_key == current_key:
+            continue
+        history.append(stored)
+    return history
+
+
+def _stored_generation_from_payload(
+    payload: dict[str, Any],
+    artifacts: ArtifactStore,
+    job_id: str,
+    reference_bytes: dict[str, bytes],
+) -> StoredGeneration:
+    operation = GenerationOperation.model_validate(payload.get("operation"))
+    receipt = None
+    if payload.get("receipt") is not None:
+        receipt = GenerationReceipt.model_validate(payload.get("receipt"))
+    status = payload.get("status") or (receipt.status if receipt else "claimed")
+    if receipt is not None:
+        _load_generation_bytes(artifacts, job_id, receipt, reference_bytes)
+    return StoredGeneration(operation=operation, receipt=receipt, status=status)
+
+
+def _load_repairs(
+    artifacts: ArtifactStore,
+    job_id: str,
+    reference_bytes: dict[str, bytes],
+) -> tuple[list[StoredRepair], StoredRepair | None]:
+    found: list[StoredRepair] = []
+    for name in ("repairs/1.json", "repairs/2.json", "repairs/hold.json", "repair.json"):
+        payload = _read_json(artifacts, job_id, name)
+        if payload is None:
+            continue
+        try:
+            plan = RepairPlan.model_validate(payload.get("plan"))
+            status = str(payload.get("status") or plan.status)
+            stored = StoredRepair(plan=plan, status=status)
+        except (ValidationError, TypeError, ValueError):
+            logger.warning("skipping repair artifact %s for job %s", name, job_id, exc_info=True)
+            continue
+        if plan.receipt is not None:
+            _load_generation_bytes(artifacts, job_id, plan.receipt, reference_bytes)
+        if not any(
+            item.plan.repair_count == stored.plan.repair_count
+            and item.plan.critique_generation_output_id
+            == stored.plan.critique_generation_output_id
+            for item in found
+        ):
+            found.append(stored)
+    latest = None
+    latest_payload = _read_json(artifacts, job_id, "repair.json")
+    if latest_payload is not None:
+        try:
+            plan = RepairPlan.model_validate(latest_payload.get("plan"))
+            latest = StoredRepair(
+                plan=plan,
+                status=str(latest_payload.get("status") or plan.status),
+            )
+        except (ValidationError, TypeError, ValueError):
+            logger.warning("skipping latest repair artifact for job %s", job_id, exc_info=True)
+    if latest is None and found:
+        latest = found[-1]
+    return found, latest
+
+
+def _load_critique(artifacts: ArtifactStore, job_id: str) -> StoredCritique | None:
+    payload = _read_json(artifacts, job_id, "critique.json")
+    if payload is None:
+        return None
+    try:
+        assessment = CritiqueAssessment.model_validate(payload.get("assessment"))
+        model_id = _required_model_id(payload.get("model_id"))
+        status = payload.get("execution_status") or "completed"
+        return StoredCritique(
+            model_id=model_id,
+            result=assessment,
+            status=status if status in {"completed", "failed"} else "completed",
+        )
+    except (ValidationError, TypeError, ValueError):
+        logger.warning("skipping critique artifact for job %s", job_id, exc_info=True)
+        return None
+
+
+def _load_input_bytes(
+    artifacts: ArtifactStore,
+    job_id: str,
+    contract: Phase0JobContract,
+) -> dict[str, bytes]:
+    stored: dict[str, bytes] = {}
+    for item in contract.references:
+        candidates = (
+            f"input/{item.reference_id}-{item.filename}",
+            f"input/{item.filename}",
+        )
+        for name in candidates:
+            data = artifacts.get_artifact(job_id, name)
+            if data:
+                stored[item.reference_id] = data
+                break
+    return stored
+
+
+def _evidence(
+    contract: Phase0JobContract, reference_bytes: dict[str, bytes]
+) -> list[BrainEvidenceRef]:
+    return [
+        BrainEvidenceRef(
+            reference_id=item.reference_id,
+            filename=item.filename,
+            media_type=item.media_type,
+            hash_algorithm=item.hash_algorithm,
+            content_hash=item.content_hash,
+            role=item.role,
+            bytes_available=item.reference_id in reference_bytes,
+        )
+        for item in contract.references
+    ]
+
+
+def _read_json(artifacts: ArtifactStore, job_id: str, name: str) -> dict[str, Any] | None:
+    raw = artifacts.get_artifact(job_id, name)
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning("skipping %s for job %s: not valid JSON", name, job_id)
+        return None
+    if not isinstance(value, dict):
+        logger.warning("skipping %s for job %s: JSON was not an object", name, job_id)
+        return None
+    return value
+
+
+def _required_model_id(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("model_id is required")
+    return value.strip()
+
+
+def _as_stage(value: object) -> JobStage:
+    if value in _STAGE_ORDER:
+        return value  # type: ignore[return-value]
+    return "intake"
+
+
+def _as_state(value: object) -> JobState | None:
+    if value in {"accepted", "ready", "hold", "failed"}:
+        return value  # type: ignore[return-value]
+    return None
+
+
+def _effective_stage(
+    job_stage: JobStage,
+    has_eye: bool,
+    has_brain: bool,
+    has_stylist: bool,
+    has_compile: bool,
+    has_generation: bool,
+    has_critique: bool,
+    has_repair: bool,
+) -> JobStage:
+    derived: JobStage = "intake"
+    if has_eye:
+        derived = "eye"
+    if has_brain:
+        derived = "brain"
+    if has_stylist:
+        derived = "stylist"
+    if has_compile:
+        derived = "compile"
+    if has_generation:
+        derived = "generate"
+    if has_critique:
+        derived = "critique"
+    if has_repair:
+        derived = "repair"
+    if _STAGE_ORDER.index(derived) > _STAGE_ORDER.index(job_stage):
+        return derived
+    return job_stage
+
+
+def _effective_state(
+    job_state: JobState | None,
+    generation: StoredGeneration | None,
+    critique: StoredCritique | None,
+    repair: StoredRepair | None = None,
+) -> JobState:
+    if repair is not None and repair.plan.status == "hold":
+        return "hold"
+    if repair is not None and repair.plan.status == "failed":
+        return "failed"
+    if critique is not None and critique.result is not None:
+        if critique.result.status == "hold":
+            return "hold"
+        return "ready"
+    if generation is not None and generation.receipt is not None:
+        if generation.receipt.status == "failed":
+            return "failed"
+        if generation.receipt.status in {"hold", "uncertain"}:
+            return "hold"
+        if generation.receipt.status == "completed":
+            return job_state or "ready"
+    return job_state or "accepted"

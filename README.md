@@ -1,64 +1,9 @@
-# midas-backend
+# MIDAS Virtual Studio
 
-Generalized MIDAS Virtual Studio backend. Architecture A is the engineering baseline. FastAPI is the API shell. OpenRouter is the provider boundary.
+Clean MIDAS backend for furniture and product categories.
 
-This milestone runs one path:
+The implementation baseline is Architecture A: the application owns intake, the immutable job contract, the durable state machine, specialist services, the provider gateway, independent review, bounded correction, and package release.
 
-`Phase-0 job → validation → original product image → Eye → OpenRouter → EyeObservation → job readiness`
+`GET /health` returns `{"status": "ok"}`. The public jobs API is under `/api/v1`. `POST /api/v1/jobs` freezes a Phase-0 contract. Image references must include `content_base64`; bytes are stored on the in-memory job, not on the frozen identity contract. `POST /api/v1/jobs/{job_id}/eye` reconstructs EyeInput from that job and runs Eye with a caller-supplied `model_id`. Normal tests use a fake provider. A live OpenRouter path exists in `tests/test_live_eye_provider.py` and `tests/test_live_api_eye.py` and runs only when `MIDAS_RUN_LIVE_PROVIDER_TEST=1`. Later stages are not implemented.
 
-Living Room is not the product scope. The Eye stage does not select a model. The caller supplies `model_id`. No canonical Eye prompt is bundled.
-
-## Run
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-Health check: `http://127.0.0.1:8000/health`
-
-Copy `.env.example` to `.env` before a live provider call. `OPENROUTER_API_KEY` is required only when a job actually calls OpenRouter.
-
-## Temporary live execution
-
-Pass `model_id` on the job. The first temporary live id is `openai/gpt-4.1`. The runtime does not substitute another model.
-
-```json
-{
-  "model_id": "openai/gpt-4.1",
-  "original_product_image": {
-    "media_type": "image/png",
-    "data_base64": "<base64 bytes>",
-    "source_role": "<caller-supplied role>"
-  },
-  "job": {
-    "taxonomy_node_id": "node-1",
-    "profile_id": "profile-1",
-    "product_role": "hero",
-    "references": [],
-    "lighting": null,
-    "wall_paint": null,
-    "floor": null,
-    "mood": null,
-    "plants": false,
-    "human": false,
-    "input_condition": null
-  }
-}
-```
-
-`POST /jobs` validates that body and returns job status. `GET /jobs/{job_id}` returns the same job-scoped readiness, including the Eye observation.
-
-## Tests
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-```
-
-The test suite injects a fake provider. It does not call OpenRouter.
-
-## Not in this milestone
-
-Brain, Stylist, compiler, generation, critic, repair, package, catalogue retrieval, model selection, Magnific, LangGraph, n8n, billing, and frontend.
+`MIDAS_SOURCES/` is the specification and evidence corpus. See [docs/SOURCES.md](docs/SOURCES.md). Do not treat Living Room history or historical provider ids as the production workflow.
