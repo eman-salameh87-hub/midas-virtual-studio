@@ -57,7 +57,7 @@ from app.stages.operator import (
     existing_operation_blocks_dispatch,
     generation_may_proceed,
 )
-from app.contracts.review import OwnerApproval, PackageRelease
+from app.contracts.review import OwnerApproval, PackageRelease, PreGenerationApproval
 from app.stages.package import package_is_complete
 from app.stages.repair import (
     FRESH_RENDER_UNSUPPORTED_REASON,
@@ -154,6 +154,16 @@ class EngineProviderFailedError(Exception):
 class GenerationNotRunError(Exception):
     def __init__(self, job_id: str) -> None:
         self.job_id = job_id
+        super().__init__(job_id)
+
+
+INITIAL_RENDER_COUNT = 1
+
+
+class PreGenerationApprovalRequiredError(Exception):
+    def __init__(self, job_id: str, reasons: list[str]) -> None:
+        self.job_id = job_id
+        self.reasons = reasons
         super().__init__(job_id)
 
 
@@ -954,11 +964,28 @@ def execute_job_generate(
             list(compile_artifact.hold_reasons) or ["Engine compile is held"],
         )
 
-    operation = build_generation_operation(record)
+    try:
+        operation = build_generation_operation(record)
+    except ValidationError:
+        reasons = _pre_generation_blockers(record)
+        if reasons:
+            if _pre_generation_approval_is_stale(record):
+                _commit(store, record.model_copy(update={"pre_generation_approval": None}))
+            raise PreGenerationApprovalRequiredError(job_id, reasons)
+        raise
     stored = record.generation
     if stored is not None and stored.operation.operation_key == operation.operation_key:
         if stored.receipt is None or existing_operation_blocks_dispatch(stored.receipt):
             return record
+
+    reasons = _pre_generation_blockers(record)
+    if reasons:
+        if _pre_generation_approval_is_stale(record):
+            _commit(
+                store,
+                record.model_copy(update={"pre_generation_approval": None}),
+            )
+        raise PreGenerationApprovalRequiredError(job_id, reasons)
 
     claimed = record.model_copy(
         update={
@@ -1540,6 +1567,117 @@ def _repair_preservation_result(
         "unsupported",
         "the adapter did not perform a targeted local edit; scene preservation was not claimed",
     )
+
+
+def approve_pre_generation(
+    store: JobStore,
+    *,
+    job_id: str,
+    owner_id: str | None = None,
+    revision: int | None = None,
+    approved_at: str | None = None,
+    expires_at: str | None = None,
+) -> JobRecord:
+    """Authorize the first render. Does not approve the reviewed candidate."""
+
+    record = get_job(store, job_id, owner_id=owner_id, revision=revision)
+    if record.engine is None or record.engine.result is None:
+        raise EngineNotRunError(job_id)
+    if not generation_may_proceed(record.engine.result):
+        raise GenerationNotReadyError(
+            job_id,
+            list(record.engine.result.hold_reasons) or ["Engine compile is held"],
+        )
+    if record.contract.request_identity is None:
+        raise GenerationNotReadyError(job_id, ["request identity is missing"])
+    identity = record.contract.request_identity
+    existing = record.pre_generation_approval
+    stamp = approved_at or _now_iso()
+    if (
+        existing is not None
+        and existing.owner_id == record.owner_id
+        and existing.contract_id == record.contract.contract_id
+        and existing.revision == record.revision
+        and existing.request_hash == identity.request_hash
+        and existing.render_count == INITIAL_RENDER_COUNT
+        and not _approval_expired(existing.expires_at, now=stamp)
+        and existing.expires_at == expires_at
+    ):
+        return record
+    approval = PreGenerationApproval(
+        owner_id=record.owner_id,
+        contract_id=record.contract.contract_id,
+        revision=record.revision,
+        request_hash=identity.request_hash,
+        render_count=INITIAL_RENDER_COUNT,
+        approved_at=stamp,
+        expires_at=expires_at,
+    )
+    updated = record.model_copy(
+        update={
+            "pre_generation_approval": approval,
+            "events": list(record.events)
+            + [
+                job_event(
+                    kind="pre_generation_approved",
+                    stage="generate",
+                    state=record.state,
+                    contract_id=record.contract.contract_id,
+                    revision=record.revision,
+                )
+            ],
+        }
+    )
+    _commit(store, updated)
+    return updated
+
+
+def _pre_generation_blockers(record: JobRecord) -> list[str]:
+    approval = record.pre_generation_approval
+    if approval is None:
+        return ["pre-generation approval does not exist"]
+    identity = record.contract.request_identity
+    reasons: list[str] = []
+    if approval.owner_id != record.owner_id:
+        reasons.append("pre-generation approval belongs to another owner")
+    if identity is None or approval.request_hash != identity.request_hash:
+        reasons.append("pre-generation approval is for another request_hash")
+    if approval.contract_id != record.contract.contract_id or approval.revision != record.revision:
+        reasons.append("pre-generation approval is for another contract revision")
+    if approval.render_count != INITIAL_RENDER_COUNT:
+        reasons.append("pre-generation approval is for another render count")
+    if _approval_expired(approval.expires_at):
+        reasons.append("pre-generation approval is expired")
+    return reasons
+
+
+def _pre_generation_approval_is_stale(record: JobRecord) -> bool:
+    approval = record.pre_generation_approval
+    if approval is None:
+        return False
+    identity = record.contract.request_identity
+    if identity is None:
+        return True
+    return (
+        approval.owner_id != record.owner_id
+        or approval.contract_id != record.contract.contract_id
+        or approval.revision != record.revision
+        or approval.request_hash != identity.request_hash
+        or approval.render_count != INITIAL_RENDER_COUNT
+    )
+
+
+def _approval_expired(expires_at: str | None, *, now: str | None = None) -> bool:
+    if expires_at is None:
+        return False
+    from datetime import datetime
+
+    try:
+        deadline = datetime.fromisoformat(expires_at)
+        current = datetime.fromisoformat(now or _now_iso())
+    except ValueError:
+        return True
+    return current >= deadline
 
 
 def approve_job(

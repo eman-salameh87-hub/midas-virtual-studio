@@ -32,7 +32,12 @@ from typing import Any
 import httpx
 
 from app.contracts.engine import EngineCompile
-from app.contracts.generation import GenerationOperation, SubmittedImageRequest
+from app.contracts.generation import (
+    GenerationOperation,
+    ProviderCostEvidence,
+    ProviderUsageEvidence,
+    SubmittedImageRequest,
+)
 from app.providers.openrouter import OpenRouterCallRecord, OpenRouterSettings
 from app.runtime.pixels import aspect_token
 
@@ -245,6 +250,32 @@ def post_image(
     return data
 
 
+def provider_cost_evidence(
+    data: dict[str, Any],
+) -> tuple[ProviderCostEvidence, ProviderUsageEvidence | None]:
+    """Copy usage.cost when the response includes it. Do not estimate a number."""
+
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return ProviderCostEvidence(amount=None, currency=None, status="unknown"), None
+    recorded = ProviderUsageEvidence(
+        prompt_tokens=_optional_int(usage.get("prompt_tokens")),
+        completion_tokens=_optional_int(usage.get("completion_tokens")),
+        total_tokens=_optional_int(usage.get("total_tokens")),
+        cost=_optional_number(usage.get("cost")),
+    )
+    currency = usage.get("currency") if isinstance(usage.get("currency"), str) else None
+    if "cost" not in usage or recorded.cost is None:
+        return (
+            ProviderCostEvidence(amount=None, currency=None, status="unknown"),
+            recorded,
+        )
+    return (
+        ProviderCostEvidence(amount=recorded.cost, currency=currency, status="known"),
+        recorded,
+    )
+
+
 def decode_image_response(data: dict[str, Any]) -> tuple[bytes, str]:
     """Return image bytes and a MIME type from data[0]. Never invents pixels."""
 
@@ -354,6 +385,18 @@ def _enum_values(descriptor: object) -> list[str] | None:
     if not isinstance(values, list):
         return None
     return [str(item) for item in values]
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _optional_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _max_count(descriptor: object) -> int | None:

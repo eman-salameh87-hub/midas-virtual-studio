@@ -375,6 +375,17 @@ class GetCompileResponse(BaseModel):
     engine: EngineView
 
 
+class PreGenerationApprovalRequest(BaseModel):
+    """Authorize the compiled render. Does not approve release.
+
+    expires_at is optional because the job contract has no expiry field.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expires_at: str | None = None
+
+
 class ExecuteGenerateRequest(BaseModel):
     """Dispatch generation for a persisted EngineCompile.
 

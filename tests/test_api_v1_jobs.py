@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.api.jobs import get_eye_provider
 from app.contracts.job import Phase0JobContract
-from app.main import app
+from app.main import GET_DOC_PATHS, POST_DOC_PATHS, app
 from app.providers.fake_eye import FakeEyeProvider, observation_for
 from app.runtime.model_policy import eye_model
 from app.runtime.state import JOB_STORE
@@ -450,6 +450,24 @@ def test_post_jobs_accepts_lifestyle_without_other_outcome() -> None:
     stored = JOB_STORE.get(response.json()["job_id"])
     assert stored is not None
     assert stored.contract.intent.other_outcome is None
+
+
+def test_docs_list_every_post_before_every_get() -> None:
+    spec = _client().get("/openapi.json").json()
+    posts = [path for path, methods in spec["paths"].items() if "post" in methods]
+    gets = [path for path, methods in spec["paths"].items() if "get" in methods]
+    assert set(POST_DOC_PATHS) == set(posts)
+    assert set(GET_DOC_PATHS) == set(gets)
+    docs = _client().get("/docs")
+    assert docs.status_code == 200
+    html = docs.text
+    post_list = json.dumps(list(POST_DOC_PATHS))
+    get_list = json.dumps(list(GET_DOC_PATHS))
+    assert "operationsSorter" in html
+    assert post_list in html
+    assert get_list in html
+    assert html.index(post_list) < html.index(get_list)
+    assert "post: 0, get: 1" in html
 
 
 def test_mime_media_type_is_rejected() -> None:

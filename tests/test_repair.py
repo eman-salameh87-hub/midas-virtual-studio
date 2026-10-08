@@ -132,6 +132,8 @@ def _seed_critiqued(
         ("critique", f"/api/v1/jobs/{job_id}/critique", {}),
     ]
     for name, path, body in steps:
+        if name == "generate":
+            assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
         assert client.post(path, json=body).status_code == 200
         if name == through:
             break

@@ -18,6 +18,7 @@ JobEventKind = Literal[
     "stylist_failed",
     "compile_completed",
     "compile_failed",
+    "pre_generation_approved",
     "generate_claimed",
     "generate_completed",
     "generate_failed",

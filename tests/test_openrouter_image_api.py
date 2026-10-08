@@ -14,6 +14,7 @@ from app.providers.openrouter_images import (
     ImageModelCapabilities,
     clear_image_catalog_cache,
     prepare_image_request,
+    provider_cost_evidence,
     remember_image_catalog,
 )
 from app.runtime.pixels import aspect_token, size_matches_tier, solid_png
@@ -470,6 +471,43 @@ def _generate(provider: OpenRouterGenerationProvider) -> GenerationProviderResul
             reference_bytes=_bytes_for(compile_artifact),
         )
     )
+
+
+def test_openrouter_cost_is_stored_only_when_the_response_reports_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded = base64.b64encode(PNG_1X1).decode("ascii")
+
+    def _with_cost(_settings: object, _body: object, record: object, **_kwargs: object) -> dict[str, object]:
+        record.http_status = 200  # type: ignore[attr-defined]
+        return {
+            "data": [{"b64_json": encoded, "media_type": "image/png"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3, "cost": 0.04, "currency": "USD"},
+        }
+
+    monkeypatch.setattr("app.providers.openrouter_images.post_image", _with_cost)
+    known = _generate(_provider())
+    assert known.receipt.status == "completed"
+    assert known.receipt.provider_cost is not None
+    assert known.receipt.provider_cost.status == "known"
+    assert known.receipt.provider_cost.amount == 0.04
+    assert known.receipt.provider_cost.currency == "USD"
+    assert known.receipt.provider_usage is not None
+    assert known.receipt.provider_usage.total_tokens == 3
+
+    def _without_cost(_settings: object, _body: object, record: object, **_kwargs: object) -> dict[str, object]:
+        record.http_status = 200  # type: ignore[attr-defined]
+        return {"data": [{"b64_json": encoded, "media_type": "image/png"}], "usage": {"total_tokens": 3}}
+
+    monkeypatch.setattr("app.providers.openrouter_images.post_image", _without_cost)
+    unknown = _generate(_provider())
+    assert unknown.receipt.provider_cost is not None
+    assert unknown.receipt.provider_cost.status == "unknown"
+    assert unknown.receipt.provider_cost.amount is None
+    assert unknown.receipt.provider_cost.currency is None
+    absent = provider_cost_evidence({"data": []})
+    assert absent[0].status == "unknown"
+    assert absent[0].amount is None
 
 
 def test_http_rejection_is_not_an_ambiguous_generation(monkeypatch: pytest.MonkeyPatch) -> None:

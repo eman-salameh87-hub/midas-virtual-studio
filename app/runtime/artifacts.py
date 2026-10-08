@@ -92,6 +92,11 @@ class FilesystemArtifactStore:
             "complete": record.complete,
             "releasable": record.releasable,
             "approval": record.approval.model_dump(mode="json") if record.approval else None,
+            "pre_generation_approval": (
+                record.pre_generation_approval.model_dump(mode="json")
+                if record.pre_generation_approval
+                else None
+            ),
             "release": record.release.model_dump(mode="json") if record.release else None,
             "reference_measurements": [
                 item.model_dump(mode="json") for item in record.reference_measurements

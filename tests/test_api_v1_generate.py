@@ -101,6 +101,7 @@ def _seed_compiled(client: TestClient) -> str:
     assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/compile", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
     return job_id
 
 

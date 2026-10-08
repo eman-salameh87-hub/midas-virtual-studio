@@ -1,13 +1,13 @@
 # MIDAS Virtual Studio
 
-Production-oriented backend for the MIDAS Virtual Studio workflow.
+Backend for the MIDAS Virtual Studio workflow.
 
-The backend provides a FastAPI API for processing furniture and product visualization jobs through a contract-driven Architecture A workflow.
+The backend provides a FastAPI API for furniture and product visualization jobs through a contract-driven Architecture A workflow. Job state for a running process is in memory. Completed stages are also written as local files under `outputs/<job_id>/` and can be reconstructed after restart. This is not a cloud deployment and not durable Vault storage.
 
 ## Workflow
 
 ```text
-Intake
+Create Job
   ↓
 Eye
   ↓
@@ -15,38 +15,51 @@ Brain
   ↓
 Stylist
   ↓
-Engine
+Compile
   ↓
-Generate
+Pre-generation approval
+  ↓
+OpenRouter image generation
+  ↓
+Pixel validation
   ↓
 Critique
   ↓
-Bounded Repair
+Bounded Repair, when Critique requires it
   ↓
-Critique
+Critique again, after a completed repair
   ↓
-Release / Hold
+Final owner approval
+  ↓
+Release
 ```
 
-Each stage produces a typed artifact and is bound to the current job contract.
+Each stage produces a typed artifact bound to the current job contract.
+
+Two human approvals stay separate:
+
+- Pre-generation approval authorizes one render. It does not authorize release.
+- Final owner approval happens after Critique and is required before release.
 
 ## Architecture
 
 The implementation follows Architecture A:
 
 - FastAPI intake API
-- Immutable job contract
-- Runtime job state
+- Immutable job contract and server-derived request identity
+- In-process job state
 - Specialist stages
-- OpenRouter provider integration
-- Image generation
+- OpenRouter for live planning and image generation
+- Measured pixel validation after generation
 - Independent critique
 - Bounded repair
-- Local artifact persistence
-- Startup recovery
+- Local artifact files and a delivery manifest
+- Startup recovery from those files
 - Contract and execution tests
 
-The backend is provider-adapter based. Model IDs are supplied through stage/provider boundaries rather than being hard-coded into the workflow.
+Magnific is not a generation dependency. There is no billing, quote, or pricing subsystem. When OpenRouter returns a usage cost, that number is stored as evidence. A missing cost stays null and `unknown`. It is never stored as zero.
+
+The image-model default is `google/gemini-3.1-flash-image`. Planning stages default to `openai/gpt-4.1`. Callers may send an allowed `model_id`. Generate and Repair must use the image model already compiled onto the job.
 
 ## API
 
@@ -54,30 +67,36 @@ API prefix:
 
 `/api/v1`
 
-Main endpoints include:
+POST endpoints:
 
 - `POST /jobs`
-- `GET /jobs/{job_id}`
-- `GET /jobs/{job_id}/status`
 - `POST /jobs/{job_id}/eye`
-- `GET /jobs/{job_id}/eye`
 - `POST /jobs/{job_id}/brain`
-- `GET /jobs/{job_id}/brain`
 - `POST /jobs/{job_id}/stylist`
-- `GET /jobs/{job_id}/stylist`
 - `POST /jobs/{job_id}/compile`
-- `GET /jobs/{job_id}/compile`
+- `POST /jobs/{job_id}/generate/approve`
 - `POST /jobs/{job_id}/generate`
-- `GET /jobs/{job_id}/generate`
-- `GET /jobs/{job_id}/generate/image`
 - `POST /jobs/{job_id}/critique`
-- `GET /jobs/{job_id}/critique`
 - `POST /jobs/{job_id}/repair`
+- `POST /jobs/{job_id}/review/approve`
+- `POST /jobs/{job_id}/review/release`
+
+GET endpoints:
+
+- `GET /jobs/{job_id}`
+- `GET /jobs/{job_id}/eye`
+- `GET /jobs/{job_id}/brain`
+- `GET /jobs/{job_id}/stylist`
+- `GET /jobs/{job_id}/compile`
+- `GET /jobs/{job_id}/generate`
+- `GET /jobs/{job_id}/critique`
 - `GET /jobs/{job_id}/repair`
+- `GET /jobs/{job_id}/generate/image`
+- `GET /jobs/{job_id}/status`
 
-Interactive API documentation is available through FastAPI/Swagger when the server is running.
+`GET /health` reports process status. Interactive docs: `/docs`. Swagger lists POST operations before GET operations.
 
-See `docs/frontend-api.md` for the frontend integration contract.
+See `docs/frontend-api.md` for request and error details.
 
 ## Setup
 
@@ -112,8 +131,6 @@ Then open:
 http://127.0.0.1:8000/docs
 ```
 
-for the interactive Swagger API documentation.
-
 ## Tests
 
 Run the full local test suite:
@@ -122,14 +139,12 @@ Run the full local test suite:
 pytest -q
 ```
 
-Live provider tests are opt-in:
+The last documented local run was `311 passed, 7 skipped`. The skipped tests are live provider calls. They stay skipped unless:
 
 ```powershell
 $env:MIDAS_RUN_LIVE_PROVIDER_TEST="1"
 pytest -q
 ```
-
-Without the live-provider flag, live provider tests remain skipped.
 
 ## Project Structure
 
@@ -137,56 +152,54 @@ Without the live-provider flag, live provider tests remain skipped.
 app/
   api/          FastAPI routes and schemas
   contracts/    Typed stage contracts
-  providers/    Provider adapters and fake providers
-  runtime/      Job state, artifacts and recovery
-  stages/       Eye, Brain, Stylist, Engine, Critique and Repair
+  providers/    OpenRouter adapters and fake providers
+  runtime/      Job state, artifacts, checksums, and recovery
+  stages/       Eye, Brain, Stylist, Engine, Operator, Critique, Repair, package
 
-tests/           Contract, execution, API and recovery tests
-docs/            API and source documentation
+tests/          Contract, execution, API, and recovery tests
+docs/           API and source documentation
+outputs/        Local job artifacts for this process
 ```
 
 ## Runtime Flow
 
-A complete job can progress through the following path:
+Create stores the contract, hashes reference bytes, and derives `request_hash`. Eye, Brain, and Stylist then run as separate calls. Compile freezes the exact prompt, references, view, proportions, and resolution.
 
-```text
-Job Intake
-    ↓
-Eye Observation
-    ↓
-Brain Planning
-    ↓
-Stylist Planning
-    ↓
-Engine Compilation
-    ↓
-Image Generation
-    ↓
-Independent Critique
-    ↓
-Bounded Repair
-    ↓
-Independent Re-critique
-    ↓
-Pass / Hold
-```
+`POST /generate/approve` records pre-generation approval for the current owner, contract revision, request hash, and render count (`1`). `expires_at` is optional. The job contract has no expiry of its own. `POST /generate` returns `409 PRE_GENERATION_APPROVAL_REQUIRED` and does not call OpenRouter when that approval is missing, belongs to another owner, does not match the request hash or revision, names another render count, or is expired. A later contract revision clears the previous approval.
 
-Generation and repair preserve the job contract and relevant reference bindings across attempts.
+Generation uses the OpenRouter Image API (`POST /api/v1/images`). Resolution and aspect ratio are request fields, not prompt-only text. After the bytes return, the backend measures width, height, and MIME type. A tier or ratio mismatch is a hold. The image is not resized or upscaled to force a pass.
 
-Critique operates independently from generation and determines whether the current output passes or requires bounded correction.
+Critique compares the original reference and the generated image. It records product fidelity, styling, Brain/Stylist plan compliance, requested view, scene compliance, attribute drift, and unknowns. A Critique pass does not release the job. `POST /review/approve` records final owner approval. `POST /review/release` releases that approved candidate.
 
-Repair is bounded and does not allow an unbounded generation/correction loop.
+Repair runs only when Critique says `repair_required`. The limit is two image repairs. Repair is not a restart of Eye, Brain, Stylist, or Compile. The planner keeps the original product reference and names protected scene attributes. The current OpenRouter generation adapter does not advertise `local_edit`. A targeted local edit therefore holds, and scene preservation is not claimed. A geometry or identity failure can select `fresh_render`, which is a new image call and does not claim the previous scene was preserved. An exhausted repair limit holds with no further provider call. A completed repair must be critiqued again before final approval.
+
+## Evidence
+
+A job directory can contain:
+
+- `job.json` — owner, contract, review, both approval records, release
+- `eye.json`, `brain.json`, `stylist.json`, `compile.json`
+- `generation.json` and `generations/` — operation, receipt, measured pixels, provider usage and cost when returned
+- `output/` — current generated image bytes
+- `input/` — stored reference bytes
+- `critique.json` and `critiques/`
+- `repair.json` and `repairs/` when a repair exists
+- `manifest.json` — delivery projection, including persisted cost evidence when a receipt has it
+
+Reference metadata and checksums are recorded from the stored bytes. A checksum mismatch holds the job.
 
 ## Recovery
 
-Runtime artifacts are persisted locally so the application can reconstruct completed job state after restart.
+On startup the process rebuilds in-memory jobs from `outputs/<job_id>/` (`MIDAS_OUTPUTS_DIR` overrides the directory). It loads the saved receipts. It does not call OpenRouter. A completed, held, or uncertain generation receipt blocks another paid dispatch for that operation.
 
-Recovery restores available job artifacts and completed stage results without re-dispatching completed provider operations.
+## Live proof
 
-## Provider Integration
+One live end-to-end job has completed this path:
 
-The backend uses provider adapters so workflow stages are separated from provider-specific transport details.
+`dd169c6b-fc47-46e3-bd28-20bc002f348b`
 
-OpenRouter is currently used for live model execution.
+Eye observed one dining table and six dining chairs from the reference. The contract category is Dining Sets. The path was Create, Eye, Brain, Stylist, Compile, pre-generation approval, OpenRouter generate, pixel validation, Critique pass, final owner approval, and release.
 
-Fake providers are included for deterministic contract and execution tests without making live provider calls.
+The generated file is a 2048×2048 PNG. The provider request was `resolution=2K` and `aspect_ratio=1:1`. Format check passed. The provider-reported cost on the receipt is `0.102204` with status `known`. The response did not include a currency, so currency is null. Final job state is `released`, with `complete=true`, `releasable=true`, and an owner approval record.
+
+This proves that one case. It does not prove every product category, a Midas companion or SKU workflow, or a live repair-required case.

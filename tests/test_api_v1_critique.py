@@ -100,6 +100,7 @@ def _seed_generated(client: TestClient) -> str:
     assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/compile", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/generate", json={}).status_code == 200
     return job_id
 
@@ -192,6 +193,7 @@ def test_uncertain_generation_blocks_critique() -> None:
     assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/compile", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/generate", json={}).status_code == 200
     res = client.post(
         f"/api/v1/jobs/{job_id}/critique", json={}

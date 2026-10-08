@@ -416,6 +416,7 @@ class OpenRouterGenerationProvider:
             image_catalog,
             post_image,
             prepare_image_request,
+            provider_cost_evidence,
             redacted_audit,
         )
 
@@ -477,6 +478,7 @@ class OpenRouterGenerationProvider:
         content_hash = hashlib.sha256(output_bytes).hexdigest()
         output_id = f"gen-{operation.operation_key[:12]}"
         completed_at = _now_iso()
+        provider_cost, provider_usage = provider_cost_evidence(data)
         receipt_id = self.last_call.response_id or self.last_call.request_id
         if not receipt_id:
             receipt_id = f"openrouter-image-{content_hash[:20]}"
@@ -501,6 +503,8 @@ class OpenRouterGenerationProvider:
                 hold_reasons=[],
                 actual_model_id=self.last_call.model or operation.model_id,
                 provider_request=prepared.audit,
+                provider_usage=provider_usage,
+                provider_cost=provider_cost,
             ),
             output_bytes=output_bytes,
         )

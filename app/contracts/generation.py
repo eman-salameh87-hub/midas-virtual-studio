@@ -5,8 +5,8 @@ saves: operation key, claim, receipt, status, timestamps, and retry
 classification. Those sources do not publish a field-level JSON schema.
 
 This is the typed claim/receipt for one EngineCompile dispatch. It does not
-critique, repair, or release. Costs/billing are not part of this vertical
-slice. Magnific and OpenRouter request blobs are not accepted.
+critique, repair, or release. Provider-reported usage is evidence only.
+Magnific and OpenRouter request blobs are not accepted.
 """
 
 from typing import Literal
@@ -105,6 +105,35 @@ class GenerationOperation(BaseModel):
         return self
 
 
+class ProviderUsageEvidence(BaseModel):
+    """Usage fields copied from a completed image response. Missing keys stay null."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cost: float | None = None
+
+
+class ProviderCostEvidence(BaseModel):
+    """Provider-reported cost. Unknown cost is null, never zero."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    amount: float | None = None
+    currency: str | None = None
+    status: Literal["known", "unknown"]
+
+    @model_validator(mode="after")
+    def status_matches_amount(self) -> "ProviderCostEvidence":
+        if self.status == "unknown" and self.amount is not None:
+            raise ValueError("unknown cost must not store an amount")
+        if self.status == "known" and self.amount is None:
+            raise ValueError("known cost requires the provider-reported amount")
+        return self
+
+
 class SubmittedImageRequest(BaseModel):
     """Non-secret settings actually prepared for the image provider.
 
@@ -152,6 +181,8 @@ class GenerationReceipt(BaseModel):
     measured_aspect_ratio: str | None = None
     actual_model_id: str | None = None
     provider_request: SubmittedImageRequest | None = None
+    provider_usage: ProviderUsageEvidence | None = None
+    provider_cost: ProviderCostEvidence | None = None
 
     @model_validator(mode="after")
     def receipt_matches_status(self) -> "GenerationReceipt":

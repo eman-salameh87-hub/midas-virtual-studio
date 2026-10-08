@@ -136,6 +136,9 @@ def test_live_http_job_generate_openrouter_image() -> None:
     assert compile_artifact["model_id"] == IMAGE_MODEL
     assert compile_artifact["exact_prompt"]
 
+    approved = client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={})
+    if approved.status_code != 200:
+        pytest.fail("pre-generation approval failed with " + approved.text)
     generated = client.post(f"/api/v1/jobs/{job_id}/generate", json={})
     if generated.status_code != 200:
         pytest.fail("live generation provider failed with " + generated.text)

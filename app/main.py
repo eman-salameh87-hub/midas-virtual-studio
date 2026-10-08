@@ -5,12 +5,15 @@ Stylist, Compile, Generate, Critique · assess, and Critique · repair are
 explicit follow-up calls. Release is not implemented.
 """
 
+import json
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse
 
 from app.api.errors import ApiError, ErrorResponse, api_error_handler, request_validation_handler
 from app.api.jobs import router as jobs_router
@@ -28,6 +31,35 @@ async def lifespan(_app: FastAPI):
     yield
 
 
+# Swagger UI groups operations by path. This order is display-only.
+POST_DOC_PATHS = (
+    "/api/v1/jobs",
+    "/api/v1/jobs/{job_id}/eye",
+    "/api/v1/jobs/{job_id}/brain",
+    "/api/v1/jobs/{job_id}/stylist",
+    "/api/v1/jobs/{job_id}/compile",
+    "/api/v1/jobs/{job_id}/generate/approve",
+    "/api/v1/jobs/{job_id}/generate",
+    "/api/v1/jobs/{job_id}/critique",
+    "/api/v1/jobs/{job_id}/repair",
+    "/api/v1/jobs/{job_id}/review/approve",
+    "/api/v1/jobs/{job_id}/review/release",
+)
+GET_DOC_PATHS = (
+    "/api/v1/jobs/{job_id}",
+    "/api/v1/jobs/{job_id}/eye",
+    "/api/v1/jobs/{job_id}/brain",
+    "/api/v1/jobs/{job_id}/stylist",
+    "/api/v1/jobs/{job_id}/compile",
+    "/api/v1/jobs/{job_id}/generate",
+    "/api/v1/jobs/{job_id}/critique",
+    "/api/v1/jobs/{job_id}/repair",
+    "/api/v1/jobs/{job_id}/generate/image",
+    "/api/v1/jobs/{job_id}/status",
+    "/health",
+)
+
+
 app = FastAPI(
     title="MIDAS Virtual Studio",
     description=(
@@ -40,7 +72,7 @@ app = FastAPI(
         "owner_id is an application-level check only."
     ),
     version="0.1.0",
-    docs_url="/docs",
+    docs_url=None,
     lifespan=lifespan,
 )
 app.add_exception_handler(ApiError, api_error_handler)
@@ -79,6 +111,36 @@ def _openapi() -> dict:
 
 
 app.openapi = _openapi
+
+
+def _ordered_docs() -> HTMLResponse:
+    """Serve Swagger UI with every POST listed before every GET."""
+
+    response = get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+    )
+    html = response.body.decode()
+    sorter = f"""
+    operationsSorter: (a, b) => {{
+      const rank = {{ post: 0, get: 1 }};
+      const posts = {json.dumps(list(POST_DOC_PATHS))};
+      const gets = {json.dumps(list(GET_DOC_PATHS))};
+      const methodDelta = (rank[a.get("method")] ?? 9) - (rank[b.get("method")] ?? 9);
+      if (methodDelta !== 0) return methodDelta;
+      const order = a.get("method") === "post" ? posts : gets;
+      const left = order.indexOf(a.get("path"));
+      const right = order.indexOf(b.get("path"));
+      return (left < 0 ? order.length : left) - (right < 0 ? order.length : right);
+    }},
+    """
+    html = html.replace("presets:", sorter + "presets:", 1)
+    return HTMLResponse(html)
+
+
+@app.get("/docs", include_in_schema=False)
+def swagger_docs() -> HTMLResponse:
+    return _ordered_docs()
 
 
 @app.get("/health", tags=["health"], summary="Health check")

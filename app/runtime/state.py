@@ -20,7 +20,12 @@ from app.contracts.generation import GenerationOperation, GenerationReceipt, Gen
 from app.contracts.reference import ChecksumStatus, ReferenceMeasurement
 from app.contracts.job import Phase0JobContract
 from app.contracts.repair import REPAIR_LIMIT, RepairPlan
-from app.contracts.review import OwnerApproval, PackageRelease, ReviewStatus
+from app.contracts.review import (
+    OwnerApproval,
+    PackageRelease,
+    PreGenerationApproval,
+    ReviewStatus,
+)
 from app.contracts.stylist import StylistPlan
 from app.providers.brain import BrainEvidenceRef
 from app.runtime.events import JobEvent
@@ -203,6 +208,7 @@ class JobRecord(BaseModel):
     complete: bool = False
     releasable: bool = False
     approval: OwnerApproval | None = None
+    pre_generation_approval: PreGenerationApproval | None = None
     release: PackageRelease | None = None
     events: list[JobEvent] = Field(default_factory=list)
     reference_bytes: dict[str, bytes] = Field(default_factory=dict)
