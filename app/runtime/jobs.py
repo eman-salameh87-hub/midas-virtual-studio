@@ -19,7 +19,9 @@ from app.providers.living_room_eye_observation import LivingRoomEyeMappingError
 from app.providers.openrouter import OpenRouterEyeProvider
 from app.providers.stylist import StylistInput, StylistProvider
 from app.runtime.artifacts import output_filename, persist_job_record
+from app.runtime.checksum import annotate_checksum
 from app.runtime.events import job_event
+from app.runtime.reference_metadata import measure_references
 from app.runtime.job import execute_eye_job
 from app.runtime.references import freeze_intake_payload, image_bytes_for_eye
 from app.runtime.state import (
@@ -55,10 +57,14 @@ from app.stages.operator import (
     existing_operation_blocks_dispatch,
     generation_may_proceed,
 )
+from app.contracts.review import OwnerApproval, PackageRelease
+from app.stages.package import package_is_complete
 from app.stages.repair import (
+    FRESH_RENDER_UNSUPPORTED_REASON,
     LOCAL_EDIT_UNSUPPORTED_REASON,
     build_repair_generation_operation,
     build_repair_plan,
+    local_edit_supported,
     repair_action_supported,
     repair_reference_bytes,
 )
@@ -200,6 +206,20 @@ class RepairNotReadyError(Exception):
         super().__init__(job_id)
 
 
+class ReviewNotReadyError(Exception):
+    def __init__(self, job_id: str, reasons: list[str]) -> None:
+        self.job_id = job_id
+        self.reasons = reasons
+        super().__init__(job_id)
+
+
+class ReleaseNotReadyError(Exception):
+    def __init__(self, job_id: str, reasons: list[str]) -> None:
+        self.job_id = job_id
+        self.reasons = reasons
+        super().__init__(job_id)
+
+
 class ModelMismatchError(Exception):
     """Requested model does not match the compiled image model."""
 
@@ -250,6 +270,7 @@ def create_job(
 ) -> JobRecord:
     """Freeze the accepted Phase-0 contract. Eye is not run here."""
 
+    stored_bytes = dict(reference_bytes or {})
     record = JobRecord(
         job_id=str(uuid4()),
         owner_id=contract.owner_id,
@@ -274,7 +295,8 @@ def create_job(
                 revision=contract.revision,
             )
         ],
-        reference_bytes=dict(reference_bytes or {}),
+        reference_bytes=stored_bytes,
+        reference_measurements=measure_references(contract, stored_bytes, observation=None),
     )
     _commit(store, record, write_inputs=True)
     return record
@@ -557,6 +579,15 @@ def execute_job_eye(
                     revision=record.revision,
                 )
             ],
+        }
+    )
+    updated = updated.model_copy(
+        update={
+            "reference_measurements": measure_references(
+                updated.contract,
+                updated.reference_bytes,
+                observation=updated.observation,
+            )
         }
     )
     _commit(store, updated, stage="eye")
@@ -984,8 +1015,13 @@ def execute_job_generate(
             "ready" if receipt.status == "completed" else "hold"
         )
     )
-    if receipt.status == "uncertain":
+    if receipt.status == "uncertain" or receipt.format_check == "failed":
         state = "hold"
+    if receipt.status == "completed" and receipt.format_check != "passed":
+        state = "hold"
+    review_status = "hold" if state == "hold" else (
+        "generation_completed" if receipt.status == "completed" else None
+    )
     hold = current.hold if state == "hold" else None
     output_bytes = dict(current.reference_bytes)
     if receipt.output is not None and result.output_bytes is not None:
@@ -1001,10 +1037,18 @@ def execute_job_generate(
             "status": state,
             "hold": hold,
             "error": None,
-            "generation": StoredGeneration(
-                operation=operation,
-                receipt=receipt,
-                status=receipt.status,
+            "review_status": review_status,
+            "complete": False,
+            "releasable": False,
+            "approval": None,
+            "release": None,
+            "generation": annotate_checksum(
+                StoredGeneration(
+                    operation=operation,
+                    receipt=receipt,
+                    status=receipt.status,
+                ),
+                result.output_bytes,
             ),
             "reference_bytes": output_bytes,
             "events": list(current.events)
@@ -1117,7 +1161,15 @@ def execute_job_critique(
             job_id, result.assessment.contract_revision, current.revision
         )
 
-    state = "hold" if result.assessment.status == "hold" else "ready"
+    if result.assessment.status == "hold" or result.assessment.overall_result == "hold":
+        state = "hold"
+        review_status = "hold"
+    elif result.assessment.overall_result == "pass":
+        state = "review_pending"
+        review_status = "review_pending"
+    else:
+        state = "ready"
+        review_status = "generation_completed"
     hold = current.hold if state == "hold" else None
     critique_history = list(current.critique_history)
     if (
@@ -1134,6 +1186,11 @@ def execute_job_critique(
             "status": state,
             "hold": hold,
             "error": None,
+            "review_status": review_status,
+            "complete": False,
+            "releasable": False,
+            "approval": None,
+            "release": None,
             "critique": StoredCritique(
                 model_id=result.model_id,
                 result=result.assessment,
@@ -1271,13 +1328,36 @@ def execute_job_repair(
         )
 
     if plan.action != "hold" and not repair_action_supported(plan.action, provider):
+        reason = (
+            LOCAL_EDIT_UNSUPPORTED_REASON
+            if plan.action == "local_edit"
+            else FRESH_RENDER_UNSUPPORTED_REASON
+        )
         plan = build_repair_plan(
             planner_request,
             action="hold",
-            hold_reasons=[LOCAL_EDIT_UNSUPPORTED_REASON],
+            hold_reasons=[reason],
             status="hold",
         )
         return _persist_repair(store, record, plan, increment=False, event_kind="repair_held")
+
+    if plan.action == "local_edit":
+        scene_id = plan.scene_base_reference
+        scene_bytes = record.reference_bytes.get(scene_id or "")
+        if not scene_id or not scene_bytes or not local_edit_supported(provider):
+            plan = build_repair_plan(
+                planner_request,
+                action="hold",
+                hold_reasons=[LOCAL_EDIT_UNSUPPORTED_REASON],
+                status="hold",
+                preservation_status="unsupported",
+                preservation_result=(
+                    "local_edit could not use a scene base; scene preservation was not claimed"
+                ),
+            )
+            return _persist_repair(
+                store, record, plan, increment=False, event_kind="repair_held"
+            )
 
     if plan.action == "hold":
         return _persist_repair(store, record, plan, increment=False, event_kind="repair_held")
@@ -1349,6 +1429,12 @@ def execute_job_repair(
         if repair_receipt.status == "completed"
         else ("hold" if repair_receipt.status in {"hold", "uncertain"} else "failed")
     )
+    preservation_status, preservation_result = _repair_preservation_result(
+        claimed_plan,
+        provider,
+        status=status,
+        format_check=repair_receipt.format_check,
+    )
     completed_plan = claimed_plan.model_copy(
         update={
             "status": status,
@@ -1358,12 +1444,15 @@ def execute_job_repair(
             "hold_reasons": list(repair_receipt.hold_reasons)
             if repair_receipt.status == "hold"
             else claimed_plan.hold_reasons,
+            "preservation_status": preservation_status,
+            "preservation_result": preservation_result,
         }
     )
     history = list(current.generation_history)
     if current.generation is not None:
         history.append(current.generation)
     state = "hold" if status != "completed" else "ready"
+    review_status = "hold" if state == "hold" else "generation_completed"
     event_kind = "repair_completed" if status == "completed" else (
         "repair_held" if status == "hold" else "repair_failed"
     )
@@ -1373,10 +1462,18 @@ def execute_job_repair(
             "state": state,
             "status": state,
             "error": None,
-            "generation": StoredGeneration(
-                operation=operation,
-                receipt=repair_receipt,
-                status=repair_receipt.status,
+            "review_status": review_status,
+            "complete": False,
+            "releasable": False,
+            "approval": None,
+            "release": None,
+            "generation": annotate_checksum(
+                StoredGeneration(
+                    operation=operation,
+                    receipt=repair_receipt,
+                    status=repair_receipt.status,
+                ),
+                result.output_bytes,
             ),
             "generation_history": history,
             "repair": StoredRepair(plan=completed_plan, status=status),
@@ -1408,6 +1505,176 @@ def execute_job_repair(
         )
     _commit(store, updated, stage="repair", output=generated_file)
     return updated
+
+
+def _repair_preservation_result(
+    plan: RepairPlan,
+    provider: GenerationProvider,
+    *,
+    status: str,
+    format_check: str,
+):
+    if status != "completed" or format_check == "failed":
+        return (
+            "failed",
+            "repair did not complete with the requested pixel size; "
+            "scene preservation was not claimed",
+        )
+    if plan.action == "local_edit" and local_edit_supported(provider):
+        if plan.scene_base_reference and plan.product_authority_reference:
+            protected = ", ".join(plan.protected_scene_attributes)
+            return (
+                "preserved",
+                "local_edit used the previous generation as the scene base "
+                f"({plan.scene_base_reference}) and the original reference as "
+                f"product authority ({plan.product_authority_reference}); "
+                f"protected scene attributes: {protected}",
+            )
+    if plan.action == "fresh_render":
+        return (
+            "not_claimed",
+            "fresh_render does not preserve the previous scene; "
+            f"product authority remains {plan.product_authority_reference}",
+        )
+    return (
+        "unsupported",
+        "the adapter did not perform a targeted local edit; scene preservation was not claimed",
+    )
+
+
+def approve_job(
+    store: JobStore,
+    *,
+    job_id: str,
+    owner_id: str | None = None,
+    revision: int | None = None,
+    approved_at: str | None = None,
+) -> JobRecord:
+    """Record explicit owner approval. Critique pass alone cannot call this."""
+
+    record = get_job(store, job_id, owner_id=owner_id, revision=revision)
+    if (
+        record.approval is not None
+        and record.review_status in {"owner_approved", "released"}
+        and record.complete
+    ):
+        return record
+    reasons = _approval_blockers(record)
+    if reasons:
+        raise ReviewNotReadyError(job_id, reasons)
+    assert record.generation is not None
+    assert record.generation.receipt is not None
+    assert record.generation.receipt.output is not None
+    assert record.contract.request_identity is not None
+    approval = OwnerApproval(
+        owner_id=record.owner_id,
+        contract_id=record.contract.contract_id,
+        revision=record.revision,
+        request_hash=record.contract.request_identity.request_hash,
+        generation_output_id=record.generation.receipt.output.output_id,
+        approved_at=approved_at or _now_iso(),
+    )
+    updated = record.model_copy(
+        update={
+            "state": "approved",
+            "status": "approved",
+            "review_status": "owner_approved",
+            "complete": True,
+            "releasable": True,
+            "approval": approval,
+            "events": list(record.events)
+            + [
+                job_event(
+                    kind="owner_approved",
+                    stage="review",
+                    state="approved",
+                    contract_id=record.contract.contract_id,
+                    revision=record.revision,
+                )
+            ],
+        }
+    )
+    _commit(store, updated, stage="critique")
+    return updated
+
+
+def release_job(
+    store: JobStore,
+    *,
+    job_id: str,
+    owner_id: str | None = None,
+    revision: int | None = None,
+    released_at: str | None = None,
+) -> JobRecord:
+    """Release an explicitly approved candidate. Does not create approval."""
+
+    record = get_job(store, job_id, owner_id=owner_id, revision=revision)
+    if record.review_status == "released" and record.release is not None:
+        return record
+    if record.approval is None or record.review_status != "owner_approved":
+        raise ReleaseNotReadyError(
+            job_id, ["release requires an explicit owner approval"]
+        )
+    if not record.releasable or not package_is_complete(record):
+        raise ReleaseNotReadyError(job_id, ["candidate is not releasable"])
+    receipt = record.generation.receipt if record.generation else None
+    if receipt is None or receipt.format_check != "passed" or receipt.output is None:
+        raise ReleaseNotReadyError(job_id, ["format_check has not passed"])
+    if receipt.output.output_id != record.approval.generation_output_id:
+        raise ReleaseNotReadyError(
+            job_id, ["approval does not match the current generation"]
+        )
+    release = PackageRelease(
+        owner_id=record.owner_id,
+        generation_output_id=receipt.output.output_id,
+        released_at=released_at or _now_iso(),
+    )
+    updated = record.model_copy(
+        update={
+            "state": "released",
+            "status": "released",
+            "review_status": "released",
+            "complete": True,
+            "releasable": True,
+            "release": release,
+            "events": list(record.events)
+            + [
+                job_event(
+                    kind="package_released",
+                    stage="review",
+                    state="released",
+                    contract_id=record.contract.contract_id,
+                    revision=record.revision,
+                )
+            ],
+        }
+    )
+    _commit(store, updated, stage="critique")
+    return updated
+
+
+def _approval_blockers(record: JobRecord) -> list[str]:
+    reasons: list[str] = []
+    if record.critique is None or record.critique.result is None:
+        reasons.append("critique has not passed")
+    elif record.critique.result.overall_result != "pass":
+        reasons.append("critique has not passed")
+    if record.review_status == "hold" or record.state == "hold":
+        reasons.append("job is on hold")
+    receipt = record.generation.receipt if record.generation else None
+    if receipt is None or receipt.status != "completed" or receipt.format_check != "passed":
+        reasons.append("format_check has not passed")
+    if receipt is None or receipt.output is None:
+        reasons.append("generated image is not available")
+    if record.contract.request_identity is None:
+        reasons.append("request identity is missing")
+    return reasons
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _repair_planner_request(
@@ -1497,6 +1764,11 @@ def _repair_record(
             "state": state,
             "status": state,
             "error": None,
+            "review_status": "hold" if state == "hold" else record.review_status,
+            "complete": False,
+            "releasable": False,
+            "approval": None,
+            "release": None,
             "generation": generation,
             "repair": stored,
             "repairs": repairs,

@@ -17,6 +17,14 @@ REPAIR_LIMIT: Literal[2] = 2
 RepairAction = Literal["local_edit", "fresh_render", "hold"]
 RepairStatus = Literal["planned", "claimed", "completed", "hold", "failed"]
 RepairExecutionStatus = Literal["completed", "hold", "failed"]
+PreservationStatus = Literal[
+    "unrecorded",
+    "pending",
+    "preserved",
+    "not_claimed",
+    "unsupported",
+    "failed",
+]
 
 LOCK_PRESERVE_DIMENSIONS: frozenset[CritiqueDimension] = frozenset(
     {"inventory", "identity", "geometry"}
@@ -78,6 +86,12 @@ class RepairPlan(BaseModel):
     lineage: RepairLineage
     operation: GenerationOperation | None = None
     receipt: GenerationReceipt | None = None
+    scene_base_reference: str | None = None
+    product_authority_reference: str | None = None
+    protected_scene_attributes: list[str] = Field(default_factory=list)
+    targeted_attributes: list[str] = Field(default_factory=list)
+    preservation_status: PreservationStatus = "unrecorded"
+    preservation_result: str = ""
 
     @model_validator(mode="after")
     def repair_is_bounded(self) -> "RepairPlan":
@@ -114,4 +128,17 @@ class RepairPlan(BaseModel):
                 raise ValueError("a completed repair must include a generation output")
             if self.lineage.result_generation_output_id is None:
                 raise ValueError("a completed repair must record the new output id")
+        _reject_blank(self.protected_scene_attributes, "protected_scene_attributes")
+        _reject_blank(self.targeted_attributes, "targeted_attributes")
+        if self.preservation_status == "preserved":
+            if self.action != "local_edit":
+                raise ValueError("only a local_edit can record scene preservation")
+            if not self.scene_base_reference or not self.product_authority_reference:
+                raise ValueError(
+                    "preserved repair must record scene base and product authority"
+                )
+            if not self.preservation_result.strip():
+                raise ValueError("preserved repair must record a preservation result")
+        if self.preservation_status == "unsupported" and self.status == "completed":
+            raise ValueError("unsupported local edit cannot be recorded as completed")
         return self

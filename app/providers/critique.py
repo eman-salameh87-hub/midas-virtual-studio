@@ -18,6 +18,30 @@ from app.contracts.stylist import StylistPlan
 from app.runtime.state import JobStage, JobState
 
 
+class PriorGenerationRef(BaseModel):
+    """Earlier generation identity available to Critique. Bytes stay on the job."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_key: str = Field(min_length=1)
+    output_id: str | None = None
+    status: str = Field(min_length=1)
+
+
+class PriorRepairRef(BaseModel):
+    """Earlier repair identity. This does not rewrite the repair plan."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    repair_count: int = Field(ge=0, le=2)
+    action: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    scene_base_reference: str | None = None
+    product_authority_reference: str | None = None
+    source_generation_output_id: str = Field(min_length=1)
+    result_generation_output_id: str | None = None
+
+
 class CritiqueInput(BaseModel):
     """Persisted Job State snapshot for a stateless Critique · assess call."""
 
@@ -35,6 +59,8 @@ class CritiqueInput(BaseModel):
     receipt: GenerationReceipt
     original_reference_id: str = Field(min_length=1)
     generated_output_id: str = Field(min_length=1)
+    prior_generations: list[PriorGenerationRef] = Field(default_factory=list)
+    prior_repairs: list[PriorRepairRef] = Field(default_factory=list)
     stage: JobStage
     state: JobState
 

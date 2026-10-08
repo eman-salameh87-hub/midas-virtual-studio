@@ -17,6 +17,7 @@ from app.contracts.engine import EngineOutputFormat
 from app.contracts.job import OutputView
 
 GenerationStatus = Literal["claimed", "completed", "failed", "hold", "uncertain"]
+FormatCheck = Literal["passed", "failed", "unmeasured"]
 RetryClassification = Literal[
     "do_not_retry",
     "retry_if_never_started",
@@ -27,6 +28,7 @@ ProviderCapability = Literal[
     "multi_reference",
     "exact_prompt",
     "output_format",
+    "local_edit",
 ]
 GeneratedMediaType = Literal["JPG", "PNG", "WebP"]
 
@@ -103,6 +105,27 @@ class GenerationOperation(BaseModel):
         return self
 
 
+class SubmittedImageRequest(BaseModel):
+    """Non-secret settings actually prepared for the image provider.
+
+    This is not a second output contract. It records the API path, model,
+    resolution, aspect ratio, and reference count used for one attempt.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    api: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
+    resolution: str = Field(min_length=1)
+    aspect_ratio: str = Field(min_length=1)
+    input_reference_count: int = Field(ge=0)
+    reference_roles: list[str]
+    output_format_parameter: str | None = None
+    supported_resolutions: list[str]
+    supported_aspect_ratios: list[str]
+    max_input_references: int | None = None
+
+
 class GenerationReceipt(BaseModel):
     """Provider receipt for one claimed operation. Never a quality approval."""
 
@@ -119,10 +142,36 @@ class GenerationReceipt(BaseModel):
     output: GenerationOutputRef | None
     capability_checks: list[ProviderCapability]
     hold_reasons: list[str]
+    format_check: FormatCheck = "unmeasured"
+    requested_width: int | None = None
+    requested_height: int | None = None
+    measured_width: int | None = None
+    measured_height: int | None = None
+    measured_format: str | None = None
+    measured_mime: str | None = None
+    measured_aspect_ratio: str | None = None
+    actual_model_id: str | None = None
+    provider_request: SubmittedImageRequest | None = None
 
     @model_validator(mode="after")
     def receipt_matches_status(self) -> "GenerationReceipt":
         _reject_blank(self.hold_reasons, "hold_reasons")
+        if self.format_check == "passed":
+            if (
+                self.requested_width is None
+                or self.requested_height is None
+                or self.measured_width is None
+                or self.measured_height is None
+            ):
+                raise ValueError("a passed format_check must record requested and measured dimensions")
+            same_pixels = (
+                self.requested_width == self.measured_width
+                and self.requested_height == self.measured_height
+            )
+            if self.provider_request is None and not same_pixels:
+                raise ValueError("format_check passed does not match the recorded dimensions")
+        if self.format_check == "failed" and self.status == "completed":
+            raise ValueError("a dimension mismatch cannot be a completed generation")
         if self.status == "completed":
             if self.output is None:
                 raise ValueError("a completed generation receipt must include an output reference")
@@ -135,7 +184,16 @@ class GenerationReceipt(BaseModel):
         elif self.status == "hold":
             if not self.hold_reasons:
                 raise ValueError("a held generation receipt must specify at least one hold reason")
-            if self.output is not None:
+            if self.format_check == "failed":
+                if self.output is None:
+                    raise ValueError(
+                        "a format-check failure must keep the measured output reference"
+                    )
+                if self.requested_width is None or self.requested_height is None:
+                    raise ValueError(
+                        "a format-check failure must record the requested dimensions"
+                    )
+            elif self.output is not None:
                 raise ValueError("a held generation receipt must not claim an output")
         elif self.status == "uncertain":
             if self.output is not None:

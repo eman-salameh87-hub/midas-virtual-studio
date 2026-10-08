@@ -7,17 +7,14 @@ paths never claim a successful output.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 from datetime import datetime, timezone
 
 from app.contracts.generation import GenerationOutputRef, GenerationReceipt, ProviderCapability
 from app.providers.generation import GenerationProviderRequest, GenerationProviderResult
+from app.runtime.pixels import expected_pixels, solid_png
 
-_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
-)
-FAKE_OUTPUT_BYTES = base64.b64decode(_PNG_B64)
+FAKE_OUTPUT_BYTES = solid_png(2048, 2048)
 FAKE_OUTPUT_HASH = hashlib.sha256(FAKE_OUTPUT_BYTES).hexdigest()
 
 FAKE_CAPABILITIES: frozenset[ProviderCapability] = frozenset(
@@ -33,14 +30,20 @@ FAKE_CAPABILITIES: frozenset[ProviderCapability] = frozenset(
 class FakeGenerationProvider:
     """In-memory adapter. `requests` records dispatch attempts only."""
 
-    def __init__(self, *, mode: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        mode: str | None = None,
+        extra_capabilities: frozenset[ProviderCapability] | set[ProviderCapability] | None = None,
+    ) -> None:
         self.mode = mode
+        self.extra_capabilities = frozenset(extra_capabilities or ())
         self.requests: list[GenerationProviderRequest] = []
 
     def capabilities(self) -> frozenset[ProviderCapability]:
         if self.mode == "missing_capability":
             return frozenset()
-        return FAKE_CAPABILITIES
+        return frozenset(FAKE_CAPABILITIES | self.extra_capabilities)
 
     def generate(self, request: GenerationProviderRequest) -> GenerationProviderResult:
         self.requests.append(request)
@@ -66,6 +69,12 @@ class FakeGenerationProvider:
         if self.mode == "fail":
             raise RuntimeError("fake generation provider failed")
         output_id = f"gen-{operation.operation_key[:12]}"
+        if self.mode == "wrong_size":
+            output_bytes = solid_png(1024, 1024)
+        else:
+            width, height = expected_pixels(operation.output_format)
+            output_bytes = solid_png(width, height)
+        output_hash = hashlib.sha256(output_bytes).hexdigest()
         return GenerationProviderResult(
             receipt=GenerationReceipt(
                 operation_key=operation.operation_key,
@@ -81,12 +90,12 @@ class FakeGenerationProvider:
                     filename=f"{output_id}.png",
                     media_type="PNG",
                     hash_algorithm="sha256",
-                    content_hash=FAKE_OUTPUT_HASH,
+                    content_hash=output_hash,
                 ),
-                capability_checks=list(FAKE_CAPABILITIES),
+                capability_checks=list(self.capabilities()),
                 hold_reasons=[],
             ),
-            output_bytes=FAKE_OUTPUT_BYTES,
+            output_bytes=output_bytes,
         )
 
 

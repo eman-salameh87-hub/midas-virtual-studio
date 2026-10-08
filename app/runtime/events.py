@@ -27,6 +27,8 @@ JobEventKind = Literal[
     "repair_completed",
     "repair_failed",
     "repair_held",
+    "owner_approved",
+    "package_released",
 ]
 
 

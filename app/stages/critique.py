@@ -4,13 +4,15 @@ Inspects the original reference and completed generation against the locked
 contract. Does not repair or release. Does not choose a model.
 """
 
-from app.contracts.critique import CritiqueAssessment, LOCK_DIMENSIONS
+from app.contracts.critique import LOCK_DIMENSIONS, AttributeDrift, CritiqueAssessment
 from app.contracts.engine import EngineCompile
 from app.providers.critique import (
     CritiqueInput,
     CritiqueProvider,
     CritiqueProviderRequest,
     CritiqueResult,
+    PriorGenerationRef,
+    PriorRepairRef,
 )
 from app.runtime.artifacts import get_artifact_store, output_filename
 from app.runtime.state import JobRecord
@@ -51,8 +53,28 @@ def build_critique_input(record: JobRecord) -> CritiqueInput:
         receipt=receipt,
         original_reference_id=original_id,
         generated_output_id=receipt.output.output_id,
+        prior_generations=_prior_generations(record),
+        prior_repairs=_prior_repairs(record),
         stage=record.stage,
         state=record.state,
+    )
+
+
+def record_view_drift(*, planned: str, observed: str) -> AttributeDrift | None:
+    """Record view drift without changing the planned Brain or Stylist text."""
+
+    if planned.strip().casefold() == observed.strip().casefold():
+        return None
+    return AttributeDrift(
+        attribute="view",
+        planned=planned,
+        observed=observed,
+        result="drift",
+        evidence=[
+            "Brain and Stylist view text was not rewritten",
+            f"planned={planned}",
+            f"observed={observed}",
+        ],
     )
 
 
@@ -132,6 +154,34 @@ def validate_critique_assessment(
         raise CritiqueAssessmentInvalidError(
             "overall pass cannot override inventory, identity, or geometry failure"
         )
+    _require_review_sections(assessment)
+
+
+def _require_review_sections(assessment: CritiqueAssessment) -> None:
+    """New critiques must separate fidelity, styling, plan, view, scene, and drift."""
+
+    if not assessment.product_fidelity:
+        raise CritiqueAssessmentInvalidError("critique must list product fidelity dimensions")
+    if not assessment.styling_compliance:
+        raise CritiqueAssessmentInvalidError("critique must include styling compliance")
+    if not assessment.plan_compliance:
+        raise CritiqueAssessmentInvalidError("critique must include Brain/Stylist plan compliance")
+    if not assessment.view_compliance:
+        raise CritiqueAssessmentInvalidError("critique must include requested view compliance")
+    if not assessment.scene_compliance:
+        raise CritiqueAssessmentInvalidError("critique must include scene compliance")
+    sections = {
+        "styling": assessment.styling_compliance,
+        "plan": assessment.plan_compliance,
+        "view": assessment.view_compliance,
+        "scene": assessment.scene_compliance,
+    }
+    for name, items in sections.items():
+        for item in items:
+            if item.section != name:
+                raise CritiqueAssessmentInvalidError(
+                    f"{name} compliance contains a {item.section} section"
+                )
 
 
 def critique_may_proceed(compile_artifact: EngineCompile) -> bool:
@@ -160,6 +210,43 @@ def original_reference_bytes(record: JobRecord) -> tuple[str, bytes, str] | None
         item for item in record.contract.references if item.reference_id == reference_id
     )
     return reference_id, data, reference.media_type
+
+
+def _prior_generations(record: JobRecord) -> list[PriorGenerationRef]:
+    refs: list[PriorGenerationRef] = []
+    for stored in record.generation_history:
+        output_id = None
+        status = stored.status
+        if stored.receipt is not None:
+            status = stored.receipt.status
+            if stored.receipt.output is not None:
+                output_id = stored.receipt.output.output_id
+        refs.append(
+            PriorGenerationRef(
+                operation_key=stored.operation.operation_key,
+                output_id=output_id,
+                status=status,
+            )
+        )
+    return refs
+
+
+def _prior_repairs(record: JobRecord) -> list[PriorRepairRef]:
+    refs: list[PriorRepairRef] = []
+    for stored in record.repairs:
+        plan = stored.plan
+        refs.append(
+            PriorRepairRef(
+                repair_count=plan.repair_count,
+                action=plan.action,
+                status=plan.status,
+                scene_base_reference=plan.scene_base_reference,
+                product_authority_reference=plan.product_authority_reference,
+                source_generation_output_id=plan.source_generation_output_id,
+                result_generation_output_id=plan.lineage.result_generation_output_id,
+            )
+        )
+    return refs
 
 
 def _original_reference_id(record: JobRecord) -> str:

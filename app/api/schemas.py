@@ -1,13 +1,14 @@
 """Public JSON DTOs for the versioned jobs API."""
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from app.contracts.brain import BrainPlan
 from app.contracts.critique import CritiqueAssessment
 from app.contracts.engine import EngineCompile
 from app.contracts.eye import EyeObservation
 from app.contracts.generation import GenerationOperation, GenerationReceipt
-from app.contracts.job import Phase0JobContract
+from app.contracts.job import Phase0JobContract, RequestIdentity
 from app.contracts.reference import ReferenceAsset
 from app.contracts.repair import RepairPlan
 from app.contracts.stylist import StylistPlan
@@ -18,6 +19,7 @@ from app.runtime.model_policy import (
     image_model,
     stylist_model,
 )
+from app.contracts.review import ReviewStatus
 from app.runtime.state import JobError, JobRecord, JobStage, JobState
 from app.stages.eye import Readiness
 
@@ -82,15 +84,100 @@ class IntakeReferenceAsset(ReferenceAsset):
 
 
 class IntakePhase0JobContract(Phase0JobContract):
-    """Phase-0 contract as submitted on POST /jobs. Same canonical fields."""
+    """Phase-0 contract as submitted on POST /jobs.
+
+    request_identity is not caller input. The server hashes the reference
+    bytes and computes request_hash after this body is accepted.
+    """
 
     references: list[IntakeReferenceAsset] = Field(min_length=1)
+    request_identity: SkipJsonSchema[RequestIdentity | None] = Field(
+        default=None,
+        description="Server-derived. Omit this object on create.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_client_request_identity(cls, value: object) -> object:
+        """Ignore a caller-supplied identity. The frozen contract recomputes it."""
+
+        if not isinstance(value, dict) or "request_identity" not in value:
+            return value
+        data = dict(value)
+        data.pop("request_identity", None)
+        return data
+
+
+_CREATE_JOB_EXAMPLE: dict[str, object] = {
+    "contract": {
+        "contract_id": "contract-towel-1",
+        "revision": 1,
+        "owner_id": "owner-1",
+        "intent": {
+            "mode": "Manual",
+            "job_type": "New Project",
+            "job_option": "One by one (same department)",
+            "requested_outcomes": ["Lifestyle"],
+            "requested_pieces": ["towel"],
+            "excluded_pieces": [],
+            "selected_count": {"status": "declared", "value": 1},
+        },
+        "item": {
+            "department": "Accessories",
+            "category": "Bathroom",
+            "subcategory": "Towels",
+            "product_role": "hero",
+        },
+        "source_condition": {"input_condition": "annotated multi-view sheet"},
+        "references": [
+            {
+                "reference_id": "ref-towel",
+                "filename": "pixel.png",
+                "media_type": "PNG",
+                "hash_algorithm": "sha256",
+                "role": "Product / vendor reference",
+                "content_base64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+                    "2mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                ),
+            }
+        ],
+        "outputs": {
+            "views": ["Wide view"],
+            "image_proportions": "Square · 1:1",
+            "resolution": "2K",
+            "package_members": ["lifestyle"],
+        },
+        "changes": {
+            "policy_mode": "fidelity-locked",
+            "allowed_changes": ["styled setting"],
+            "protected_identity": ["towel count"],
+            "room_locks": [],
+            "creative_variables": [],
+        },
+        "preferences": {
+            "lighting": "Soft daylight",
+            "wall": "Sage",
+            "floor": "Limestone",
+            "plants": False,
+            "human": False,
+            "mood": "Calm & natural",
+        },
+        "statements": [],
+        "unknowns": [],
+        "conflicts": [],
+    }
+}
 
 
 class CreateJobRequest(BaseModel):
-    """Create a job from a Phase-0 contract. Eye is not executed."""
+    """Create a job from a Phase-0 contract. Eye is not executed.
 
-    model_config = ConfigDict(extra="forbid")
+    Do not send request_identity, request_hash, or source_hashes. The server
+    derives them from the contract fields and the reference bytes.
+    """
+
+    model_config = ConfigDict(extra="forbid", json_schema_extra={"example": _CREATE_JOB_EXAMPLE})
 
     contract: IntakePhase0JobContract
 
@@ -471,6 +558,11 @@ class JobView(BaseModel):
     generation: GenerationView | None
     critique: CritiqueView | None
     repair: RepairView | None
+    review_status: ReviewStatus | None = None
+    package_status: ReviewStatus | None = None
+    complete: bool = False
+    releasable: bool = False
+    approved: bool = False
 
 
 class JobStatusView(BaseModel):
@@ -491,6 +583,11 @@ class JobStatusView(BaseModel):
     repair_available: bool
     hold: Readiness | None
     error: JobError | None
+    review_status: ReviewStatus | None = None
+    package_status: ReviewStatus | None = None
+    complete: bool = False
+    releasable: bool = False
+    approved: bool = False
 
 
 def create_job_response(record: JobRecord) -> CreateJobResponse:
@@ -646,6 +743,8 @@ def generation_output_available(record: JobRecord) -> bool:
         return False
     if stored.receipt.status != "completed":
         return False
+    if stored.checksum_status == "mismatch":
+        return False
     output_id = stored.receipt.output.output_id
     if output_id in record.reference_bytes and record.reference_bytes[output_id]:
         return True
@@ -795,6 +894,14 @@ def job_view(record: JobRecord) -> JobView:
         generation=generation,
         critique=critique,
         repair=repair,
+        review_status=record.review_status,
+        package_status=record.review_status,
+        complete=record.complete,
+        releasable=record.releasable,
+        approved=record.approval is not None and record.review_status in {
+            "owner_approved",
+            "released",
+        },
     )
 
 
@@ -818,5 +925,13 @@ def job_status_view(record: JobRecord) -> JobStatusView:
         repair_available=_repair_view(record) is not None,
         hold=record.hold,
         error=record.error,
+        review_status=record.review_status,
+        package_status=record.review_status,
+        complete=record.complete,
+        releasable=record.releasable,
+        approved=record.approval is not None and record.review_status in {
+            "owner_approved",
+            "released",
+        },
     )
 

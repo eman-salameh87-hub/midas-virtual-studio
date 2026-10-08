@@ -78,6 +78,43 @@ class CritiqueUnknown(BaseModel):
     detail: str = Field(min_length=1)
 
 
+class CritiqueCompliance(BaseModel):
+    """One non-fidelity review section. Product locks stay on CritiqueFinding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    section: Literal["styling", "plan", "view", "scene"]
+    result: CritiqueFindingResult
+    observation: str = Field(min_length=1)
+    expected: str = Field(min_length=1)
+    evidence: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def evidence_is_explicit(self) -> "CritiqueCompliance":
+        _reject_blank(self.evidence, "evidence")
+        return self
+
+
+class AttributeDrift(BaseModel):
+    """Difference between a planned attribute and what the image shows.
+
+    planned is copied from the existing plan. This record does not rewrite it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attribute: str = Field(min_length=1)
+    planned: str = Field(min_length=1)
+    observed: str = Field(min_length=1)
+    result: Literal["drift", "match", "unknown"]
+    evidence: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def evidence_is_explicit(self) -> "AttributeDrift":
+        _reject_blank(self.evidence, "evidence")
+        return self
+
+
 class CritiqueAssessment(BaseModel):
     """Persisted Critique · assess artifact bound to one completed generation."""
 
@@ -95,6 +132,12 @@ class CritiqueAssessment(BaseModel):
     findings: list[CritiqueFinding] = Field(min_length=1)
     unknowns: list[CritiqueUnknown]
     summary: str = Field(min_length=1)
+    product_fidelity: list[str] = Field(default_factory=list)
+    styling_compliance: list[CritiqueCompliance] = Field(default_factory=list)
+    plan_compliance: list[CritiqueCompliance] = Field(default_factory=list)
+    view_compliance: list[CritiqueCompliance] = Field(default_factory=list)
+    scene_compliance: list[CritiqueCompliance] = Field(default_factory=list)
+    drift: list[AttributeDrift] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def assessment_is_consistent(self) -> "CritiqueAssessment":
@@ -139,4 +182,21 @@ class CritiqueAssessment(BaseModel):
             raise ValueError(
                 "overall pass cannot ignore uncertain inventory, identity, or geometry"
             )
+        if self.overall_result == "pass" and any(item.result == "drift" for item in self.drift):
+            raise ValueError("overall pass cannot ignore recorded drift")
+        compliance_failures = [
+            item
+            for item in (
+                *self.styling_compliance,
+                *self.plan_compliance,
+                *self.view_compliance,
+                *self.scene_compliance,
+            )
+            if item.result == "fail"
+        ]
+        if self.overall_result == "pass" and compliance_failures:
+            raise ValueError("overall pass cannot ignore styling, plan, view, or scene failure")
+        fidelity = [item.dimension for item in self.findings if item.dimension in REQUIRED_DIMENSIONS]
+        if not self.product_fidelity:
+            object.__setattr__(self, "product_fidelity", fidelity)
         return self

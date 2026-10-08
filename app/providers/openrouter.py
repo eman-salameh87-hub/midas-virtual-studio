@@ -283,7 +283,7 @@ class OpenRouterCritiqueProvider:
             return CritiqueAssessment.model_validate(payload)
         except ValidationError as exc:
             self.last_call.mapping_mismatches = [
-                f"{'.'.join(str(part) for part in item.get('loc', ()))}: {item.get('type')}"
+                f"{'.'.join(str(part) for part in item.get('loc', ()))}: {item.get('msg')}"
                 for item in exc.errors()[:12]
             ]
             raise
@@ -315,6 +315,16 @@ class OpenRouterCritiqueProvider:
             "observation": critique_input.observation.model_dump(mode="json"),
             "brain_invariants": [
                 item.model_dump(mode="json") for item in critique_input.brain_plan.invariants
+            ],
+            "brain_plan": critique_input.brain_plan.model_dump(mode="json"),
+            "stylist_plan": critique_input.stylist_plan.model_dump(mode="json"),
+            "engine_compile": critique_input.compile.model_dump(mode="json"),
+            "preferences": critique_input.contract.preferences.model_dump(mode="json"),
+            "prior_generations": [
+                item.model_dump(mode="json") for item in critique_input.prior_generations
+            ],
+            "prior_repairs": [
+                item.model_dump(mode="json") for item in critique_input.prior_repairs
             ],
             "unknowns": [
                 item.model_dump(mode="json") for item in critique_input.compile.unknowns
@@ -375,11 +385,6 @@ GENERATION_CAPABILITIES: frozenset[ProviderCapability] = frozenset(
     }
 )
 
-_ASPECT_RATIO = {
-    "Square · 1:1": "1:1",
-    "Portrait · 4:5": "4:5",
-    "Landscape · 16:9": "16:9",
-}
 _IMAGE_MEDIA = {
     "JPG": "image/jpeg",
     "PNG": "image/png",
@@ -389,48 +394,92 @@ _GENERATION_TIMEOUT_FLOOR = 180.0
 
 
 class OpenRouterGenerationProvider:
-    """Live image generation via OpenRouter chat/completions.
+    """Live image generation via the OpenRouter Image API.
 
-    model_id comes from EngineCompile / GenerationOperation. This adapter
-    does not choose a model and does not fabricate a completed receipt.
+    model_id comes from EngineCompile / GenerationOperation. Resolution and
+    aspect ratio are Image API parameters, not prompt wording. This adapter
+    does not choose a different model and does not resize the returned bytes.
     """
 
     def __init__(self, settings: OpenRouterSettings) -> None:
         self.settings = settings
         self.last_call = OpenRouterCallRecord()
+        self.request_audit: dict[str, object] | None = None
 
     def capabilities(self) -> frozenset[ProviderCapability]:
         return GENERATION_CAPABILITIES
 
     def generate(self, request: GenerationProviderRequest) -> GenerationProviderResult:
+        from app.providers.openrouter_images import (
+            ImageRequestRejected,
+            decode_image_response,
+            image_catalog,
+            post_image,
+            prepare_image_request,
+            redacted_audit,
+        )
+
         operation = request.operation
         submitted_at = _now_iso()
         try:
-            data = self._complete(request)
-        except httpx.TimeoutException as exc:
+            catalog = image_catalog(self.settings)
+        except (httpx.TimeoutException, httpx.RequestError, RuntimeError) as exc:
+            self.last_call.error_message = "OpenRouter image capability discovery failed"
+            return self._hold(
+                operation,
+                [f"image capability discovery failed before generation: {exc.__class__.__name__}"],
+            )
+        capabilities = catalog.get(operation.model_id)
+        if capabilities is None:
+            return self._hold(
+                operation,
+                [
+                    f"model {operation.model_id} is not in the OpenRouter Image API catalog; "
+                    "no generation request was sent"
+                ],
+            )
+        try:
+            prepared = prepare_image_request(
+                operation,
+                request.compile,
+                request.reference_bytes,
+                capabilities,
+            )
+        except ImageRequestRejected as exc:
+            return self._hold(operation, exc.reasons)
+        self.request_audit = redacted_audit(prepared)
+        timeout = max(self.settings.timeout_seconds, _GENERATION_TIMEOUT_FLOOR)
+        try:
+            data = post_image(
+                self.settings,
+                prepared.body,
+                self.last_call,
+                timeout_seconds=timeout,
+            )
+        except httpx.TimeoutException:
             self.last_call.error_message = "OpenRouter generation timed out"
-            return self._uncertain(operation, submitted_at, str(exc))
+            return self._uncertain(operation, submitted_at, self.last_call.error_message, prepared.audit)
         except httpx.RequestError as exc:
-            self.last_call.error_message = "OpenRouter generation request failed"
-            return self._uncertain(operation, submitted_at, str(exc))
+            self.last_call.error_message = (
+                f"OpenRouter generation request failed: {exc.__class__.__name__}"
+            )
+            return self._uncertain(operation, submitted_at, self.last_call.error_message, prepared.audit)
+        except RuntimeError:
+            return self._completed_provider_failure(operation, submitted_at, prepared.audit)
 
-        urls = extract_message_image_urls(data)
-        if not urls:
-            self.last_call.mapping_mismatches = ["choices[0].message.images had no image_url.url"]
-            return self._uncertain(operation, submitted_at, "no generated image in response")
-
-        output_bytes, media_type = decode_generated_image(urls[0], self.settings)
-        if not output_bytes:
-            self.last_call.mapping_mismatches = ["generated image_url.url could not be decoded"]
-            return self._uncertain(operation, submitted_at, "generated image bytes missing")
+        output_bytes, media_name = decode_image_response(data)
+        media_type = _media_type_from_name(media_name, output_bytes)
+        if not output_bytes or media_type is None:
+            self.last_call.mapping_mismatches = ["image response data[0].b64_json was missing"]
+            self.last_call.error_message = "image response data[0].b64_json was missing"
+            return self._rejected(operation, submitted_at, prepared.audit, self.last_call.error_message)
 
         content_hash = hashlib.sha256(output_bytes).hexdigest()
         output_id = f"gen-{operation.operation_key[:12]}"
         completed_at = _now_iso()
         receipt_id = self.last_call.response_id or self.last_call.request_id
         if not receipt_id:
-            self.last_call.mapping_mismatches = ["OpenRouter response had no id"]
-            return self._uncertain(operation, submitted_at, "provider receipt id missing")
+            receipt_id = f"openrouter-image-{content_hash[:20]}"
         return GenerationProviderResult(
             receipt=GenerationReceipt(
                 operation_key=operation.operation_key,
@@ -450,39 +499,97 @@ class OpenRouterGenerationProvider:
                 ),
                 capability_checks=list(GENERATION_CAPABILITIES),
                 hold_reasons=[],
+                actual_model_id=self.last_call.model or operation.model_id,
+                provider_request=prepared.audit,
             ),
             output_bytes=output_bytes,
         )
 
-    def _complete(self, request: GenerationProviderRequest) -> dict[str, Any]:
-        operation = request.operation
-        body = {
-            "model": operation.model_id,
-            "modalities": ["image", "text"],
-            "messages": [
-                {
-                    "role": "user",
-                    "content": generation_user_content(
-                        operation,
-                        request.compile,
-                        request.reference_bytes,
-                    ),
-                }
-            ],
-        }
-        aspect = _ASPECT_RATIO.get(operation.output_format.image_proportions)
-        if aspect:
-            body["image_config"] = {"aspect_ratio": aspect}
-        timeout = max(self.settings.timeout_seconds, _GENERATION_TIMEOUT_FLOOR)
-        return complete_chat(self.settings, body, self.last_call, timeout_seconds=timeout)
+    def _hold(
+        self,
+        operation: GenerationOperation,
+        reasons: list[str],
+    ) -> GenerationProviderResult:
+        return GenerationProviderResult(
+            receipt=GenerationReceipt(
+                operation_key=operation.operation_key,
+                status="hold",
+                provider_name="openrouter",
+                provider_receipt_id=None,
+                claimed_at=operation.claimed_at,
+                submitted_at=None,
+                completed_at=None,
+                retry_classification="do_not_retry",
+                output=None,
+                capability_checks=list(GENERATION_CAPABILITIES),
+                hold_reasons=reasons,
+            ),
+            output_bytes=None,
+        )
+
+    def _completed_provider_failure(
+        self,
+        operation: GenerationOperation,
+        submitted_at: str,
+        provider_request: object,
+    ) -> GenerationProviderResult:
+        """A finished HTTP response is not an in-flight generation.
+
+        4xx means OpenRouter rejected the call and returned no image operation.
+        5xx can still be ambiguous, so it stays reconcile-only. A RuntimeError
+        before any status means the image request was not sent.
+        """
+
+        status = self.last_call.http_status
+        message = self.last_call.error_message or "OpenRouter image request failed"
+        if status is None:
+            return self._hold(operation, [message])
+        if 400 <= status < 500:
+            return self._rejected(
+                operation,
+                submitted_at,
+                provider_request,
+                f"OpenRouter image HTTP {status}: {message}",
+            )
+        return self._uncertain(
+            operation,
+            submitted_at,
+            f"OpenRouter image HTTP {status}: {message}",
+            provider_request,
+        )
+
+    def _rejected(
+        self,
+        operation: GenerationOperation,
+        submitted_at: str,
+        provider_request: object,
+        reason: str,
+    ) -> GenerationProviderResult:
+        return GenerationProviderResult(
+            receipt=GenerationReceipt(
+                operation_key=operation.operation_key,
+                status="failed",
+                provider_name="openrouter",
+                provider_receipt_id=self.last_call.response_id or self.last_call.request_id,
+                claimed_at=operation.claimed_at,
+                submitted_at=submitted_at,
+                completed_at=None,
+                retry_classification="retry_if_never_started",
+                output=None,
+                capability_checks=list(GENERATION_CAPABILITIES),
+                hold_reasons=[reason],
+                provider_request=provider_request,  # type: ignore[arg-type]
+            ),
+            output_bytes=None,
+        )
 
     def _uncertain(
         self,
         operation: GenerationOperation,
         submitted_at: str,
         detail: str,
+        provider_request: object = None,
     ) -> GenerationProviderResult:
-        del detail
         return GenerationProviderResult(
             receipt=GenerationReceipt(
                 operation_key=operation.operation_key,
@@ -495,7 +602,8 @@ class OpenRouterGenerationProvider:
                 retry_classification="reconcile_only",
                 output=None,
                 capability_checks=list(GENERATION_CAPABILITIES),
-                hold_reasons=[],
+                hold_reasons=[detail],
+                provider_request=provider_request,  # type: ignore[arg-type]
             ),
             output_bytes=None,
         )
@@ -615,6 +723,19 @@ def _decode_data_url(url: str) -> tuple[bytes, GeneratedMediaType] | None:
     else:
         media = _media_type_from_bytes(data)
     return data, media
+
+
+def _media_type_from_name(media_name: str, data: bytes) -> GeneratedMediaType | None:
+    if not data:
+        return None
+    lowered = media_name.casefold()
+    if "png" in lowered:
+        return "PNG"
+    if "jpeg" in lowered or "jpg" in lowered:
+        return "JPG"
+    if "webp" in lowered:
+        return "WebP"
+    return _media_type_from_bytes(data)
 
 
 def _media_type_from_bytes(data: bytes) -> GeneratedMediaType:

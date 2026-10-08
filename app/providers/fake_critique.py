@@ -5,11 +5,14 @@ It does not call a network and does not invent a generated image.
 
 from app.contracts.critique import (
     REQUIRED_DIMENSIONS,
+    AttributeDrift,
     CritiqueAssessment,
+    CritiqueCompliance,
     CritiqueFinding,
     CritiqueUnknown,
 )
 from app.providers.critique import CritiqueInput, CritiqueProviderRequest
+from app.stages.critique import record_view_drift
 
 
 class FakeCritiqueProvider:
@@ -119,7 +122,18 @@ def assessment_for(
         )
     elif violation == "missing_dimension":
         findings = findings[1:]
+    drift: list[AttributeDrift] = []
+    view_result = "pass"
+    if violation == "view_drift":
+        planned = _planned_view_text(critique_input)
+        recorded = record_view_drift(planned=planned, observed="straight-on")
+        if recorded is not None:
+            drift.append(recorded)
+        view_result = "fail"
+        overall = "repair_required"
+        summary = "Requested view drifted from the plan. Brain and Stylist text was not rewritten."
     elif violation == "wrong_job":
+        sections = _compliance(critique_input, view_result="pass")
         return CritiqueAssessment(
             job_id="other-job",
             contract_id=critique_input.contract_id,
@@ -133,8 +147,14 @@ def assessment_for(
             findings=findings,
             unknowns=unknowns,
             summary=summary,
+            styling_compliance=sections["styling"],
+            plan_compliance=sections["plan"],
+            view_compliance=sections["view"],
+            scene_compliance=sections["scene"],
+            drift=[],
         )
 
+    sections = _compliance(critique_input, view_result=view_result)
     return CritiqueAssessment(
         job_id=critique_input.job_id,
         contract_id=critique_input.contract_id,
@@ -148,4 +168,82 @@ def assessment_for(
         findings=findings,
         unknowns=unknowns,
         summary=summary,
+        styling_compliance=sections["styling"],
+        plan_compliance=sections["plan"],
+        view_compliance=sections["view"],
+        scene_compliance=sections["scene"],
+        drift=drift,
     )
+
+
+def _planned_view_text(critique_input: CritiqueInput) -> str:
+    camera = critique_input.stylist_plan.scene.camera
+    requested = critique_input.compile.requested_view
+    if "three-quarter" in camera.casefold() or "three quarter" in camera.casefold():
+        return camera
+    return f"{requested}; camera={camera}"
+
+
+def _compliance(
+    critique_input: CritiqueInput, *, view_result: str
+) -> dict[str, list[CritiqueCompliance]]:
+    preferences = critique_input.contract.preferences
+    scene = critique_input.stylist_plan.scene
+    layout = critique_input.stylist_plan.selected_layout
+    return {
+        "styling": [
+            CritiqueCompliance(
+                section="styling",
+                result="pass",
+                observation="styling requests were compared with the generated candidate",
+                expected=(
+                    f"lighting={preferences.lighting}; wall={preferences.wall}; "
+                    f"floor={preferences.floor}; mood={preferences.mood}"
+                ),
+                evidence=[
+                    f"original={critique_input.original_reference_id}",
+                    f"generated={critique_input.generated_output_id}",
+                ],
+            )
+        ],
+        "plan": [
+            CritiqueCompliance(
+                section="plan",
+                result="pass",
+                observation="Brain locks and Stylist layout were compared and not rewritten",
+                expected=layout.focal_hierarchy,
+                evidence=[
+                    f"brain_revision={critique_input.brain_plan.contract_revision}",
+                    f"stylist_revision={critique_input.stylist_plan.contract_revision}",
+                ],
+            )
+        ],
+        "view": [
+            CritiqueCompliance(
+                section="view",
+                result=view_result,  # type: ignore[arg-type]
+                observation=(
+                    "requested view matches the candidate"
+                    if view_result == "pass"
+                    else "candidate view does not match the planned camera"
+                ),
+                expected=_planned_view_text(critique_input),
+                evidence=[
+                    f"requested_view={critique_input.compile.requested_view}",
+                    f"camera={scene.camera}",
+                ],
+            )
+        ],
+        "scene": [
+            CritiqueCompliance(
+                section="scene",
+                result="pass",
+                observation="scene setting and light were compared with the candidate",
+                expected=f"{scene.setting}; {scene.light}",
+                evidence=[
+                    f"setting={scene.setting}",
+                    f"light={scene.light}",
+                ],
+            )
+        ],
+    }

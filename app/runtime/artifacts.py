@@ -88,8 +88,20 @@ class FilesystemArtifactStore:
             "error": record.error.model_dump(mode="json") if record.error else None,
             "repair_count": record.repair_count,
             "repair_limit": record.repair_limit,
+            "review_status": record.review_status,
+            "complete": record.complete,
+            "releasable": record.releasable,
+            "approval": record.approval.model_dump(mode="json") if record.approval else None,
+            "release": record.release.model_dump(mode="json") if record.release else None,
+            "reference_measurements": [
+                item.model_dump(mode="json") for item in record.reference_measurements
+            ],
         }
         self._write_json(record.job_id, "job.json", payload)
+        from app.stages.package import build_delivery_manifest
+
+        manifest = build_delivery_manifest(record)
+        self._write_json(record.job_id, "manifest.json", manifest.model_dump(mode="json"))
 
     def save_eye(self, record: JobRecord) -> None:
         if record.observation is None or record.readiness is None:
@@ -155,7 +167,7 @@ class FilesystemArtifactStore:
         self._write_json(
             record.job_id,
             "generation.json",
-            _generation_payload(stored, current_index),
+            _generation_payload(stored, current_index, record),
         )
         for index, version in versions:
             self._write_generation_version(record, version, index)
@@ -296,7 +308,7 @@ class FilesystemArtifactStore:
 
         if not isinstance(stored, StoredGeneration):
             return
-        payload = _generation_payload(stored, index)
+        payload = _generation_payload(stored, index, record)
         stem = generation_artifact_stem(index)
         self._write_json(record.job_id, f"generations/{stem}.json", payload)
         if stored.receipt is None or stored.receipt.output is None:
@@ -363,23 +375,71 @@ def _generation_index_for_output(record: JobRecord, output_id: str) -> int:
     return max(len(_generation_versions(record)), 1)
 
 
-def _generation_payload(stored: object, index: int) -> dict[str, object]:
+def _generation_payload(stored: object, index: int, record: JobRecord | None = None) -> dict[str, object]:
     from app.runtime.state import StoredGeneration
 
     assert isinstance(stored, StoredGeneration)
     kind = "initial" if index == 1 else "repair"
+    receipt = stored.receipt
+    output = receipt.output if receipt is not None else None
     artifact_filename = None
-    if stored.receipt is not None and stored.receipt.output is not None:
+    if output is not None:
         artifact_filename = (
-            f"{generation_artifact_stem(index)}."
-            f"{_MEDIA_EXT[stored.receipt.output.media_type]}"
+            f"{generation_artifact_stem(index)}.{_MEDIA_EXT[output.media_type]}"
         )
+    source_hashes: list[dict[str, str]] = []
+    if record is not None:
+        by_id = {
+            item.reference_id: item.content_hash for item in record.contract.references
+        }
+        for reference_id in stored.operation.reference_ids:
+            content_hash = by_id.get(reference_id)
+            if content_hash:
+                source_hashes.append(
+                    {"reference_id": reference_id, "content_hash": content_hash}
+                )
     return {
         "sequence_index": index,
         "generation_kind": kind,
+        "parent_generation": None if index == 1 else index - 1,
         "artifact_filename": artifact_filename,
+        "output_id": output.output_id if output is not None else None,
+        "operation_key": stored.operation.operation_key,
+        "provider_receipt_id": receipt.provider_receipt_id if receipt is not None else None,
+        "provider": receipt.provider_name if receipt is not None else None,
+        "model_id": stored.operation.model_id,
+        "source_hashes": source_hashes,
+        "requested_width": receipt.requested_width if receipt is not None else None,
+        "requested_height": receipt.requested_height if receipt is not None else None,
+        "requested_resolution": stored.operation.output_format.resolution,
+        "requested_aspect_ratio": stored.operation.output_format.image_proportions,
+        "submitted_api": (
+            None if receipt is None or receipt.provider_request is None else receipt.provider_request.api
+        ),
+        "submitted_resolution": (
+            None if receipt is None or receipt.provider_request is None else receipt.provider_request.resolution
+        ),
+        "submitted_aspect_ratio": (
+            None if receipt is None or receipt.provider_request is None else receipt.provider_request.aspect_ratio
+        ),
+        "submitted_reference_count": (
+            None
+            if receipt is None or receipt.provider_request is None
+            else receipt.provider_request.input_reference_count
+        ),
+        "measured_aspect_ratio": None if receipt is None else receipt.measured_aspect_ratio,
+        "actual_width": receipt.measured_width if receipt is not None else None,
+        "actual_height": receipt.measured_height if receipt is not None else None,
+        "actual_mime": receipt.measured_mime if receipt is not None else None,
+        "actual_format": receipt.measured_format if receipt is not None else None,
+        "sha256": output.content_hash if output is not None else None,
+        "observed_checksum": stored.observed_checksum,
+        "checksum_status": stored.checksum_status,
+        "timestamp": (
+            receipt.completed_at or receipt.claimed_at if receipt is not None else None
+        ),
         "operation": stored.operation.model_dump(mode="json"),
-        "receipt": stored.receipt.model_dump(mode="json") if stored.receipt else None,
+        "receipt": receipt.model_dump(mode="json") if receipt is not None else None,
         "status": stored.status,
     }
 

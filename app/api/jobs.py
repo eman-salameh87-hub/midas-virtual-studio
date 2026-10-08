@@ -89,6 +89,7 @@ from app.runtime.jobs import (
     StylistNotReadyError,
     StylistNotRunError,
     StylistProviderFailedError,
+    approve_job,
     create_job_from_intake,
     execute_job_brain,
     execute_job_compile,
@@ -97,11 +98,14 @@ from app.runtime.jobs import (
     execute_job_generate,
     execute_job_repair,
     execute_job_stylist,
+    ReleaseNotReadyError,
     RepairNotReadyError,
     RepairNotRequiredError,
     RepairNotRunError,
     RepairProviderFailedError,
+    ReviewNotReadyError,
     get_job,
+    release_job,
     get_job_brain,
     get_job_compile,
     get_job_critique,
@@ -226,6 +230,9 @@ def _revision_mismatch(job_id: str, expected: int, actual: int) -> NoReturn:
         "Image references (JPG, PNG, WebP) must include content_base64. "
         "If content_hash is omitted or empty, the server hashes the decoded bytes. "
         "A supplied content_hash must match those bytes. "
+        "Do not send request_identity, request_hash, or source_hashes. "
+        "The server derives source_hashes from those file digests and "
+        "request_hash from the canonical contract. "
         "Bytes are stored on the job; they are not part of the frozen identity contract. "
         "Eye is not executed. Unresolved placeholder values are rejected."
     ),
@@ -1426,6 +1433,75 @@ def get_job_generate_image_endpoint(
     return Response(content=data, media_type=media_type)
 
 
+@router.post(
+    "/jobs/{job_id}/review/approve",
+    response_model=JobStatusView,
+    summary="Record explicit owner approval",
+    description=(
+        "Approve the current candidate. A critique pass does not create this "
+        "record. complete stays false until this action succeeds."
+    ),
+    responses={403: _ERRORS[403], 404: _ERRORS[404], 409: _ERRORS[409]},
+)
+def post_job_review_approve(
+    job_id: str,
+    store: InMemoryJobStore = Depends(get_job_store),
+    owner_id: OwnerIdParam = None,
+    revision: RevisionParam = None,
+) -> JobStatusView:
+    try:
+        record = approve_job(
+            store, job_id=job_id, owner_id=owner_id, revision=revision
+        )
+    except JobNotFoundError:
+        _not_found(job_id)
+    except JobOwnerMismatchError as exc:
+        _owner_mismatch(job_id, exc.owner_id)
+    except RevisionMismatchError as exc:
+        _revision_mismatch(job_id, exc.expected, exc.actual)
+    except ReviewNotReadyError as exc:
+        raise ApiError(
+            status_code=409,
+            code="REVIEW_NOT_READY",
+            message="Candidate is not ready for owner approval",
+            details={"job_id": job_id, "reasons": exc.reasons},
+        ) from exc
+    return job_status_view(record)
+
+
+@router.post(
+    "/jobs/{job_id}/review/release",
+    response_model=JobStatusView,
+    summary="Release an approved candidate",
+    description="Release requires an existing owner approval. This route does not approve.",
+    responses={403: _ERRORS[403], 404: _ERRORS[404], 409: _ERRORS[409]},
+)
+def post_job_review_release(
+    job_id: str,
+    store: InMemoryJobStore = Depends(get_job_store),
+    owner_id: OwnerIdParam = None,
+    revision: RevisionParam = None,
+) -> JobStatusView:
+    try:
+        record = release_job(
+            store, job_id=job_id, owner_id=owner_id, revision=revision
+        )
+    except JobNotFoundError:
+        _not_found(job_id)
+    except JobOwnerMismatchError as exc:
+        _owner_mismatch(job_id, exc.owner_id)
+    except RevisionMismatchError as exc:
+        _revision_mismatch(job_id, exc.expected, exc.actual)
+    except ReleaseNotReadyError as exc:
+        raise ApiError(
+            status_code=409,
+            code="RELEASE_NOT_READY",
+            message="Candidate is not releasable",
+            details={"job_id": job_id, "reasons": exc.reasons},
+        ) from exc
+    return job_status_view(record)
+
+
 @router.get(
     "/jobs/{job_id}/status",
 
@@ -1464,5 +1540,9 @@ def _generated_image_bytes(record: JobRecord) -> tuple[bytes, str] | None:
             record.job_id, output_filename(output.media_type)
         )
     if not data:
+        return None
+    from app.runtime.checksum import sha256_hex
+
+    if sha256_hex(data) != output.content_hash:
         return None
     return data, content_type_for(output.media_type)

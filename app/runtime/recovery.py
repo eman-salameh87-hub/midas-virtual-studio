@@ -20,9 +20,13 @@ from app.contracts.engine import EngineCompile
 from app.contracts.eye import EyeObservation
 from app.contracts.generation import GenerationOperation, GenerationReceipt
 from app.contracts.job import Phase0JobContract
+from app.contracts.reference import ReferenceMeasurement
 from app.contracts.repair import RepairPlan
+from app.contracts.review import OwnerApproval, PackageRelease
 from app.contracts.stylist import StylistPlan
 from app.providers.brain import BrainEvidenceRef
+from app.runtime.checksum import annotate_checksum
+from app.runtime.reference_metadata import retain_stored_measurements
 from app.runtime.artifacts import (
     ArtifactStore,
     generation_artifact_name,
@@ -107,6 +111,16 @@ def reconstruct_job_record(
             if raw_job.get("error") is not None
             else None
         )
+        approval = (
+            OwnerApproval.model_validate(raw_job["approval"])
+            if isinstance(raw_job.get("approval"), dict)
+            else None
+        )
+        release = (
+            PackageRelease.model_validate(raw_job["release"])
+            if isinstance(raw_job.get("release"), dict)
+            else None
+        )
     except (ValidationError, TypeError, ValueError):
         logger.warning("skipping job %s: job.json failed contract validation", job_id, exc_info=True)
         return None
@@ -128,7 +142,7 @@ def reconstruct_job_record(
     stylist = _load_stylist(artifacts, job_id, contract, brain, reference_bytes)
     engine = _load_compile(artifacts, job_id, contract, brain, stylist, reference_bytes)
     generation = _load_generation(artifacts, job_id, reference_bytes)
-    critique = _load_critique(artifacts, job_id)
+    critique, critique_history = _load_critiques(artifacts, job_id)
     repairs, latest_repair = _load_repairs(artifacts, job_id, reference_bytes)
     generation_history = _load_generation_history(
         artifacts, job_id, reference_bytes, generation
@@ -155,8 +169,49 @@ def reconstruct_job_record(
         generation,
         critique,
         latest_repair,
+        approval=approval,
     )
     status = _as_state(raw_job.get("status")) or state
+    review_status, complete, releasable, approval, release = _recovered_review(
+        raw_review_status=raw_job.get("review_status"),
+        raw_complete=raw_job.get("complete"),
+        generation=generation,
+        critique=critique,
+        approval=approval,
+        release=release,
+        state=state,
+    )
+    if review_status == "review_pending" and state not in {"hold", "failed"}:
+        state = "review_pending"
+        status = state
+    elif review_status == "owner_approved" and approval is not None:
+        state = "approved"
+        status = state
+    elif review_status == "released" and approval is not None and release is not None:
+        state = "released"
+        status = state
+    elif review_status == "hold":
+        state = "hold"
+        status = state
+    measurements = _load_reference_measurements(
+        raw_job.get("reference_measurements"),
+        contract,
+        reference_bytes,
+        observation,
+    )
+    checksum_failed = (
+        generation is not None and generation.checksum_status == "mismatch"
+    ) or any(item.checksum_status == "mismatch" for item in measurements)
+    if checksum_failed:
+        state = "hold"
+        status = "hold"
+        review_status = "hold"
+        complete = False
+        releasable = False
+        error = JobError(
+            code="CHECKSUM_MISMATCH",
+            message="Stored checksum does not match the artifact bytes",
+        )
     try:
         return JobRecord(
             job_id=job_id,
@@ -177,12 +232,19 @@ def reconstruct_job_record(
             engine=engine,
             generation=generation,
             critique=critique,
+            critique_history=critique_history,
             repair=latest_repair,
             repairs=repairs,
             generation_history=generation_history,
             repair_count=repair_count,
+            review_status=review_status,
+            complete=complete,
+            releasable=releasable,
+            approval=approval,
+            release=release,
             events=[],
             reference_bytes=reference_bytes,
+            reference_measurements=measurements,
         )
     except (ValidationError, TypeError, ValueError):
         logger.warning("skipping job %s: reconstructed JobRecord is invalid", job_id, exc_info=True)
@@ -351,11 +413,16 @@ def _load_generation(
                 artifact_filename=payload.get("artifact_filename"),
                 sequence_index=payload.get("sequence_index"),
             )
-        return StoredGeneration(
+        stored = StoredGeneration(
             operation=operation,
             receipt=receipt,
             status=status,
         )
+        if receipt is not None and receipt.output is not None:
+            stored = annotate_checksum(
+                stored, reference_bytes.get(receipt.output.output_id)
+            )
+        return stored
     except (ValidationError, TypeError, ValueError):
         logger.warning("skipping generation artifact for job %s", job_id, exc_info=True)
         return None
@@ -446,7 +513,10 @@ def _stored_generation_from_payload(
             artifact_filename=payload.get("artifact_filename"),
             sequence_index=payload.get("sequence_index"),
         )
-    return StoredGeneration(operation=operation, receipt=receipt, status=status)
+    stored = StoredGeneration(operation=operation, receipt=receipt, status=status)
+    if receipt is not None and receipt.output is not None:
+        stored = annotate_checksum(stored, reference_bytes.get(receipt.output.output_id))
+    return stored
 
 
 def _load_repairs(
@@ -496,6 +566,71 @@ def _load_repairs(
     if latest is None and found:
         latest = found[-1]
     return found, latest
+
+
+def _load_reference_measurements(
+    raw: object,
+    contract: Phase0JobContract,
+    reference_bytes: dict[str, bytes],
+    observation: EyeObservation | None,
+) -> list[ReferenceMeasurement]:
+    """Reload stored measurements. Jobs that never recorded them stay unknown."""
+
+    del contract, observation
+    if not isinstance(raw, list) or not raw:
+        return []
+    try:
+        stored = [ReferenceMeasurement.model_validate(item) for item in raw]
+    except (ValidationError, TypeError, ValueError):
+        return []
+    return retain_stored_measurements(stored, reference_bytes)
+
+
+def _load_critiques(
+    artifacts: ArtifactStore, job_id: str
+) -> tuple[StoredCritique | None, list[StoredCritique]]:
+    current = _load_critique(artifacts, job_id)
+    history: list[StoredCritique] = []
+    current_output = None
+    if current is not None and current.result is not None:
+        current_output = current.result.generation_output_id
+    names = [f"critiques/{name}" for name in _list_dir(artifacts, job_id, "critiques")]
+    names.extend(
+        (
+            "critiques/01_critique_generation_01.json",
+            "critiques/02_critique_generation_02.json",
+            "critiques/03_critique_generation_03.json",
+        )
+    )
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        payload = _read_json(artifacts, job_id, name)
+        if payload is None:
+            continue
+        try:
+            assessment = CritiqueAssessment.model_validate(payload.get("assessment"))
+            model_id = _required_model_id(payload.get("model_id"))
+            status = payload.get("execution_status") or "completed"
+            stored = StoredCritique(
+                model_id=model_id,
+                result=assessment,
+                status=status if status in {"completed", "failed"} else "completed",
+            )
+        except (ValidationError, TypeError, ValueError):
+            continue
+        if assessment.generation_output_id == current_output:
+            continue
+        if any(
+            item.result is not None
+            and item.result.generation_output_id == assessment.generation_output_id
+            for item in history
+        ):
+            continue
+        history.append(stored)
+    return current, history
 
 
 def _load_critique(artifacts: ArtifactStore, job_id: str) -> StoredCritique | None:
@@ -645,9 +780,61 @@ def _as_stage(value: object) -> JobStage:
 
 
 def _as_state(value: object) -> JobState | None:
-    if value in {"accepted", "ready", "hold", "failed"}:
+    if value in {
+        "accepted",
+        "ready",
+        "hold",
+        "failed",
+        "review_pending",
+        "approved",
+        "released",
+    }:
         return value  # type: ignore[return-value]
     return None
+
+
+def _recovered_review(
+    *,
+    raw_review_status: object,
+    raw_complete: object,
+    generation: StoredGeneration | None,
+    critique: StoredCritique | None,
+    approval: OwnerApproval | None,
+    release: PackageRelease | None,
+    state: JobState,
+) -> tuple[object, bool, bool, OwnerApproval | None, PackageRelease | None]:
+    """Restore review facts. Missing approval is never filled in."""
+
+    critique_pass = (
+        critique is not None
+        and critique.result is not None
+        and critique.result.overall_result == "pass"
+        and critique.result.status != "hold"
+    )
+    format_failed = (
+        generation is not None
+        and generation.receipt is not None
+        and generation.receipt.format_check == "failed"
+    )
+    if format_failed or state == "hold":
+        return "hold", False, False, approval, None
+    if approval is None or release is not None and approval is None:
+        release = None
+    if approval is None:
+        if critique_pass:
+            return "review_pending", False, False, None, None
+        if (
+            generation is not None
+            and generation.receipt is not None
+            and generation.receipt.status == "completed"
+        ):
+            return "generation_completed", False, False, None, None
+        return None, False, False, None, None
+    if raw_review_status == "released" and release is not None:
+        return "released", True, True, approval, release
+    if raw_complete is False:
+        return "review_pending" if critique_pass else "generation_completed", False, False, approval, None
+    return "owner_approved", True, True, approval, None
 
 
 def _effective_stage(
@@ -685,14 +872,26 @@ def _effective_state(
     generation: StoredGeneration | None,
     critique: StoredCritique | None,
     repair: StoredRepair | None = None,
+    *,
+    approval: OwnerApproval | None = None,
 ) -> JobState:
     if repair is not None and repair.plan.status == "hold":
         return "hold"
     if repair is not None and repair.plan.status == "failed":
         return "failed"
+    if (
+        generation is not None
+        and generation.receipt is not None
+        and generation.receipt.format_check == "failed"
+    ):
+        return "hold"
     if critique is not None and critique.result is not None:
         if critique.result.status == "hold":
             return "hold"
+        if critique.result.overall_result == "pass" and approval is None:
+            return "review_pending"
+        if critique.result.overall_result == "pass" and approval is not None:
+            return job_state or "approved"
         return "ready"
     if generation is not None and generation.receipt is not None:
         if generation.receipt.status == "failed":

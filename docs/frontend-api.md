@@ -47,8 +47,11 @@ The contract is the Phase-0 job contract. Image references (`JPG`, `PNG`,
 `WebP`) must include `content_base64`. `content_hash` is optional on create:
 the server SHA-256 hashes the decoded file bytes (not the base64 string) and
 stores that digest on the frozen contract. If you send `content_hash`, it
-must match. The server stores those bytes on the job; they are not returned
-on later GET responses.
+must match. Do not send `request_identity`, `request_hash`, or
+`source_hashes`. The server derives `source_hashes` from those file digests
+and `request_hash` from the canonical contract, then stores both on the
+frozen contract. The server stores the file bytes on the job; they are not
+returned on later GET responses.
 
 Eye is not executed on create.
 

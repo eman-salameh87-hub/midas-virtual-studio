@@ -2,6 +2,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.contracts.critique import REQUIRED_DIMENSIONS, CritiqueAssessment
+from app.providers.critique_instruction import critique_instruction
+from app.providers.openrouter import OpenRouterCritiqueProvider, OpenRouterSettings
 
 
 def _finding(
@@ -63,6 +65,44 @@ def test_invalid_critique_missing_ready_dimension() -> None:
 def test_hold_overall_requires_hold_status() -> None:
     with pytest.raises(ValidationError, match="hold"):
         CritiqueAssessment.model_validate(_assessment(overall_result="hold"))
+
+
+def test_pass_with_critical_severity_is_rejected_and_not_coerced() -> None:
+    payload = _assessment()
+    payload["findings"][0]["result"] = "pass"
+    payload["findings"][0]["severity"] = "critical"
+    payload["findings"][1]["result"] = "pass"
+    payload["findings"][1]["severity"] = "critical"
+    with pytest.raises(ValidationError, match="passing finding cannot be critical") as caught:
+        CritiqueAssessment.model_validate(payload)
+    locations = [tuple(error["loc"]) for error in caught.value.errors()]
+    assert ("findings", 0) in locations
+    assert ("findings", 1) in locations
+    assert payload["findings"][0]["severity"] == "critical"
+    assert payload["findings"][1]["severity"] == "critical"
+
+
+def test_instruction_reserves_critical_severity_for_non_passing_findings() -> None:
+    text = critique_instruction()
+    assert 'A passing finding must not use severity "critical"' in text
+    assert 'severity "critical" is only for a non-passing finding' in text
+    assert 'result "fail" must not use severity "info"' in text
+
+
+def test_provider_reports_pass_critical_without_changing_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = _assessment()
+    payload["findings"][0]["severity"] = "critical"
+    payload["findings"][1]["severity"] = "critical"
+    provider = OpenRouterCritiqueProvider(
+        OpenRouterSettings(api_key="test-key", base_url="https://openrouter.ai/api/v1", timeout_seconds=5)
+    )
+    monkeypatch.setattr(provider, "_complete", lambda _request: payload)
+    with pytest.raises(ValidationError, match="passing finding cannot be critical"):
+        provider.assess(None)  # type: ignore[arg-type]
+    assert payload["findings"][0]["severity"] == "critical"
+    assert provider.last_call.mapping_mismatches[0].startswith(
+        "findings.0: Value error, a passing finding cannot be critical"
+    )
 
 
 def test_repair_required_is_ready() -> None:

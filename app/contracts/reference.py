@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+ChecksumStatus = Literal["matched", "mismatch", "unverified"]
+
 ReferenceRole = Literal[
     "Product / vendor reference",
     "Room / target space",
@@ -49,3 +51,27 @@ class ReferenceAsset(BaseModel):
                 "the contract does not compute one"
             )
         return value
+
+
+class ReferenceMeasurement(BaseModel):
+    """Measured facts for one source. Requested identity stays on ReferenceAsset.
+
+    source_view and product_components stay null unless a contract statement
+    or Eye item already records them. This object does not rename the file.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reference_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    declared_media_type: str = Field(min_length=1)
+    actual_mime: str | None = None
+    actual_format: str | None = None
+    width: int | None = None
+    height: int | None = None
+    content_hash: str = Field(min_length=64, max_length=64)
+    observed_checksum: str | None = None
+    checksum_status: ChecksumStatus = "unverified"
+    source_view: str | None = None
+    product_components: list[str] | None = None
+    evidence_reference_id: str | None = None

@@ -21,6 +21,14 @@ from app.providers.generation import (
     GenerationProviderRequest,
     GenerationProviderResult,
 )
+from app.runtime.pixels import (
+    aspect_matches,
+    aspect_token,
+    expected_pixels,
+    inspect_image,
+    media_types_agree,
+    size_matches_tier,
+)
 from app.runtime.state import JobRecord
 
 REQUIRED_CAPABILITIES: tuple[ProviderCapability, ...] = (
@@ -138,8 +146,86 @@ def execute_generation(
             reference_bytes=dict(reference_bytes),
         )
     )
+    result = apply_pixel_validation(operation, result)
     validate_generation_receipt(operation, compile_artifact, result)
     return result
+
+
+def apply_pixel_validation(
+    operation: GenerationOperation,
+    result: GenerationProviderResult,
+) -> GenerationProviderResult:
+    """Record measured pixels. A size mismatch becomes HOLD and is not resized."""
+
+    receipt = result.receipt
+    if result.output_bytes is None or receipt.output is None:
+        return result
+    if receipt.status not in {"completed", "hold"}:
+        return result
+
+    requested_width, requested_height = expected_pixels(operation.output_format)
+    measured = inspect_image(result.output_bytes)
+    aspect = aspect_token(operation.output_format.image_proportions)
+    dimensions_match = (
+        measured.width is not None
+        and measured.height is not None
+        and aspect is not None
+        and size_matches_tier(
+            operation.output_format.resolution,
+            aspect,
+            measured.width,
+            measured.height,
+        )
+    )
+    format_matches = media_types_agree(receipt.output.media_type, measured)
+    passed = dimensions_match and format_matches
+    if passed:
+        updated = receipt.model_copy(
+            update={
+                "format_check": "passed",
+                "requested_width": requested_width,
+                "requested_height": requested_height,
+                "measured_width": measured.width,
+                "measured_height": measured.height,
+                "measured_format": measured.image_format,
+                "measured_mime": measured.mime_type,
+                "measured_aspect_ratio": aspect if aspect and aspect_matches(aspect, measured.width or 0, measured.height or 0) else None,
+            }
+        )
+        return result.model_copy(update={"receipt": updated})
+
+    reason = (
+        "format_check failed: "
+        f"requested {requested_width}x{requested_height}, "
+        f"measured {measured.width}x{measured.height} "
+        f"{measured.mime_type or 'unreadable'}; no upscale or size conversion was applied"
+    )
+    hold_reasons = list(receipt.hold_reasons)
+    if reason not in hold_reasons:
+        hold_reasons.append(reason)
+    updated = receipt.model_copy(
+        update={
+            "status": "hold",
+            "format_check": "failed",
+            "requested_width": requested_width,
+            "requested_height": requested_height,
+            "measured_width": measured.width,
+            "measured_height": measured.height,
+            "measured_format": measured.image_format,
+            "measured_mime": measured.mime_type,
+            "measured_aspect_ratio": (
+                aspect
+                if aspect is not None
+                and measured.width is not None
+                and measured.height is not None
+                and aspect_matches(aspect, measured.width, measured.height)
+                else None
+            ),
+            "hold_reasons": hold_reasons,
+            "retry_classification": "do_not_retry",
+        }
+    )
+    return result.model_copy(update={"receipt": updated, "output_bytes": result.output_bytes})
 
 
 def validate_generation_receipt(
@@ -152,13 +238,18 @@ def validate_generation_receipt(
         raise GenerationInvalidError("receipt operation_key does not match the claim")
     if receipt.claimed_at != operation.claimed_at:
         raise GenerationInvalidError("receipt claimed_at does not match the claim")
-    if receipt.status == "completed":
-        if result.output_bytes is None:
-            raise GenerationInvalidError("completed receipt is missing output bytes")
-        assert receipt.output is not None
+    if receipt.output is not None and result.output_bytes is not None:
         digest = hashlib.sha256(result.output_bytes).hexdigest()
         if digest != receipt.output.content_hash:
             raise GenerationInvalidError("output content_hash does not match stored bytes")
+    if receipt.status == "completed":
+        if result.output_bytes is None:
+            raise GenerationInvalidError("completed receipt is missing output bytes")
+        if receipt.format_check != "passed":
+            raise GenerationInvalidError(
+                "completed generation requires format_check passed"
+            )
+        assert receipt.output is not None
         if operation.exact_prompt != compile_artifact.exact_prompt and not (
             operation.exact_prompt.startswith(compile_artifact.exact_prompt)
             and "MIDAS bounded repair" in operation.exact_prompt

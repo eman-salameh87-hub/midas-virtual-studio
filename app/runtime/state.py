@@ -17,8 +17,10 @@ from app.contracts.critique import CritiqueAssessment
 from app.contracts.engine import EngineCompile
 from app.contracts.eye import EyeInput, EyeObservation
 from app.contracts.generation import GenerationOperation, GenerationReceipt, GenerationStatus
+from app.contracts.reference import ChecksumStatus, ReferenceMeasurement
 from app.contracts.job import Phase0JobContract
 from app.contracts.repair import REPAIR_LIMIT, RepairPlan
+from app.contracts.review import OwnerApproval, PackageRelease, ReviewStatus
 from app.contracts.stylist import StylistPlan
 from app.providers.brain import BrainEvidenceRef
 from app.runtime.events import JobEvent
@@ -34,7 +36,15 @@ JobStage = Literal[
     "critique",
     "repair",
 ]
-JobState = Literal["accepted", "ready", "hold", "failed"]
+JobState = Literal[
+    "accepted",
+    "ready",
+    "hold",
+    "failed",
+    "review_pending",
+    "approved",
+    "released",
+]
 BrainExecutionStatus = Literal["completed", "failed"]
 StylistExecutionStatus = Literal["completed", "failed"]
 EngineExecutionStatus = Literal["completed", "failed"]
@@ -132,6 +142,8 @@ class StoredGeneration(BaseModel):
     operation: GenerationOperation
     receipt: GenerationReceipt | None
     status: GenerationStatus
+    checksum_status: ChecksumStatus = "unverified"
+    observed_checksum: str | None = None
 
 
 class StoredCritique(BaseModel):
@@ -187,8 +199,14 @@ class JobRecord(BaseModel):
     critique_history: list[StoredCritique] = Field(default_factory=list)
     repair_count: int = Field(default=0, ge=0, le=2)
     repair_limit: int = Field(default=REPAIR_LIMIT, ge=2, le=2)
+    review_status: ReviewStatus | None = None
+    complete: bool = False
+    releasable: bool = False
+    approval: OwnerApproval | None = None
+    release: PackageRelease | None = None
     events: list[JobEvent] = Field(default_factory=list)
     reference_bytes: dict[str, bytes] = Field(default_factory=dict)
+    reference_measurements: list[ReferenceMeasurement] = Field(default_factory=list)
 
 
 
