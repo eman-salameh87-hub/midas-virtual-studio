@@ -1,0 +1,27 @@
+{
+  "name": "midas-virtual-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "scrape:midas": "node scripts/scrape-midas-products.mjs",
+    "test": "tsx --test src/foundation.test.ts src/references.test.ts src/review.test.tsx src/flow.test.ts src/taxonomy.test.tsx src/scope.test.tsx src/suggestions.test.tsx src/submissionAudit.test.ts src/project.test.tsx src/projectItem.test.tsx src/projectScope.test.tsx src/projectSubmit.test.tsx src/jobEdit.test.tsx src/midasPicker.test.tsx"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "happy-dom": "^20.14.5",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  }
+}
