@@ -6,6 +6,7 @@ from app.api.jobs import get_eye_provider
 from app.contracts.job import Phase0JobContract
 from app.main import GET_DOC_PATHS, POST_DOC_PATHS, app
 from app.providers.fake_eye import FakeEyeProvider, observation_for
+from app.runtime.jobs import create_job_from_intake
 from app.runtime.model_policy import eye_model
 from app.runtime.state import JOB_STORE
 from app.stages.eye import build_eye_input
@@ -92,6 +93,10 @@ def _create_job(client: TestClient) -> str:
     return response.json()["job_id"]
 
 
+def _freeze_job() -> str:
+    return create_job_from_intake(JOB_STORE, _intake()).job_id
+
+
 def test_post_jobs_creates_a_job() -> None:
     response = _client().post("/api/v1/jobs", json={"contract": _intake()})
 
@@ -106,14 +111,16 @@ def test_post_jobs_creates_a_job() -> None:
     assert "observation" not in body
     stored = JOB_STORE.get(body["job_id"])
     assert stored is not None
-    assert stored.observation is None
     assert stored.reference_bytes["ref-towel"] == PNG_1X1
     assert stored.contract.references[0].content_hash == HASH
 
 
 def test_get_job_returns_the_job() -> None:
+    from app.runtime.orchestrator import join_scheduled_planning
+
     client = _client()
     job_id = _create_job(client)
+    assert join_scheduled_planning(job_id)
 
     response = client.get(f"/api/v1/jobs/{job_id}")
 
@@ -122,14 +129,16 @@ def test_get_job_returns_the_job() -> None:
     assert body["job_id"] == job_id
     assert body["contract"]["contract_id"] == "contract-towel-1"
     assert body["revision"] == 1
-    assert body["stage"] == "intake"
-    assert body["state"] == "accepted"
+    assert body["stage"] == "compile"
+    assert body["state"] == "ready"
     assert body["hold"] is None
     assert body["error"] is None
-    assert body["eye"] is None
-    assert body["brain"] is None
-    assert body["eye_available"] is False
-    assert body["brain_available"] is False
+    assert body["eye"] is not None
+    assert body["brain"] is not None
+    assert body["eye_available"] is True
+    assert body["brain_available"] is True
+    assert body["compile_available"] is True
+    assert body["generation"] is None
     assert body["owner_id"] == "owner-1"
     dumped = json.dumps(body)
     assert "content_base64" not in dumped
@@ -138,7 +147,7 @@ def test_get_job_returns_the_job() -> None:
 
 def test_post_eye_executes_with_fake_provider() -> None:
     client = _client()
-    job_id = _create_job(client)
+    job_id = _freeze_job()
 
     response = client.post(
         f"/api/v1/jobs/{job_id}/eye",
@@ -159,7 +168,7 @@ def test_post_eye_executes_with_fake_provider() -> None:
 
 def test_eye_observation_is_persisted_in_job_state() -> None:
     client = _client()
-    job_id = _create_job(client)
+    job_id = _freeze_job()
     client.post(f"/api/v1/jobs/{job_id}/eye", json={})
 
     stored = JOB_STORE.get(job_id)
@@ -174,7 +183,7 @@ def test_eye_observation_is_persisted_in_job_state() -> None:
 
 def test_get_eye_returns_the_stored_observation() -> None:
     client = _client()
-    job_id = _create_job(client)
+    job_id = _freeze_job()
     posted = client.post(
         f"/api/v1/jobs/{job_id}/eye",
         json={},
@@ -191,25 +200,23 @@ def test_get_eye_returns_the_stored_observation() -> None:
 
 
 def test_get_status_reflects_eye_execution() -> None:
+    from app.runtime.orchestrator import join_scheduled_planning
+
     client = _client()
     job_id = _create_job(client)
+    assert join_scheduled_planning(job_id)
 
-    before = client.get(f"/api/v1/jobs/{job_id}/status")
-    assert before.status_code == 200
-    assert before.json()["ready"] is False
-    assert before.json()["stage"] == "intake"
-    assert before.json()["state"] == "accepted"
-
-    client.post(f"/api/v1/jobs/{job_id}/eye", json={})
     after = client.get(f"/api/v1/jobs/{job_id}/status")
 
     assert after.status_code == 200
     body = after.json()
     assert body["job_id"] == job_id
     assert body["revision"] == 1
-    assert body["stage"] == "eye"
+    assert body["stage"] == "compile"
     assert body["state"] == "ready"
     assert body["ready"] is True
+    assert body["compile_available"] is True
+    assert body["generation_available"] is False
     assert body["hold"] is None
     assert body["error"] is None
 
@@ -229,7 +236,7 @@ def test_unknown_job_returns_404() -> None:
 
 def test_get_eye_before_execution_returns_conflict() -> None:
     client = _client()
-    job_id = _create_job(client)
+    job_id = create_job_from_intake(JOB_STORE, _intake()).job_id
 
     response = client.get(f"/api/v1/jobs/{job_id}/eye")
 
@@ -263,9 +270,7 @@ def test_unresolved_placeholder_is_rejected() -> None:
 
 def test_end_to_end_job_eye_persistence() -> None:
     client = _client()
-    created = client.post("/api/v1/jobs", json={"contract": _intake()})
-    assert created.status_code == 200
-    job_id = created.json()["job_id"]
+    job_id = _freeze_job()
 
     executed = client.post(
         f"/api/v1/jobs/{job_id}/eye",
@@ -343,7 +348,7 @@ def test_post_eye_with_failing_provider_hides_internals() -> None:
     app.dependency_overrides[get_eye_provider] = lambda: BoomProvider()
     try:
         client = _client()
-        job_id = _create_job(client)
+        job_id = _freeze_job()
         response = client.post(
             f"/api/v1/jobs/{job_id}/eye",
             json={},
@@ -368,7 +373,7 @@ def test_fake_provider_receives_job_reference_identity() -> None:
     app.dependency_overrides[get_eye_provider] = lambda: provider
     try:
         client = _client()
-        job_id = _create_job(client)
+        job_id = _freeze_job()
         response = client.post(
             f"/api/v1/jobs/{job_id}/eye",
             json={},

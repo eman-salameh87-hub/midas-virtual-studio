@@ -275,6 +275,9 @@ class FilesystemArtifactStore:
             name = path.name
             if not _JOB_ID_RE.fullmatch(name) or ".." in name:
                 continue
+            # Client-brief dirs share this root and only have client_brief.json.
+            if not (path / "job.json").is_file():
+                continue
             found.append(name)
         return found
 

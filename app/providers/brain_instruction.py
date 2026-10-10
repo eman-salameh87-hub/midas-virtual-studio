@@ -29,10 +29,15 @@ JSON rules:
 - Count invariant value must be a string, e.g. "1" not 1.
 - mode must equal the contract policy_mode exactly.
 - route.product_role must be exactly "hero" or "supporting".
-- route.input_condition and route.category must match the contract strings.
+- route.input_condition must equal contract.source_condition.input_condition exactly.
+- route.category must equal contract.item.category exactly, character-for-character. Copy that field only. Do not use contract.item.department, contract.item.subcategory, Eye category_candidates, requested_outcomes, package_members, or a display label. Example: if contract.item.category is "home-furniture/living-rooms", route.category must be "home-furniture/living-rooms".
+- If the user JSON includes copy_exactly, copy those values into the matching BrainPlan fields. Do not emit copy_exactly in the output.
 - required_outputs[].output must be a contract package member or view.
+- requested_outcomes is the selected output type. If it includes "White BK", plan catalogue/white-background output only. Do not plan a room or lifestyle scene.
 - Do not use any grounding relation or basis other than the literals below.
-- For grounding basis "observed" or "published", evidence_reference_id must be a supplied evidence reference_id. For "inferred" or "decision", evidence_reference_id may be null.
+- If the user JSON includes allowed_evidence_ids, those are the only valid grounding evidence_reference_id values. Copy one of those strings exactly. Do not use the product name, filename, Eye item name, or a display label as evidence_reference_id.
+- For grounding basis "observed" or "published", evidence_reference_id MUST be one supplied evidence[].reference_id. If you cannot cite one, omit that grounding item. Do not invent an id. Do not use null.
+- For "inferred" or "decision", evidence_reference_id may be null.
 - Null is allowed only where listed. Omit nothing that is required; use null only for optional evidence_reference_id.
 
 Exact object (replace values from the supplied job; keep this structure):
@@ -46,8 +51,8 @@ Exact object (replace values from the supplied job; keep this structure):
   "route": {
     "operation": "extraction|assembly|scene_preservation|selective_edit|new_room|alternate_view|finishing|clarification",
     "reason": "string",
-    "input_condition": "string copied from the contract",
-    "category": "string copied from the contract",
+    "input_condition": "exact contract.source_condition.input_condition",
+    "category": "exact contract.item.category",
     "product_role": "hero|supporting"
   },
   "mode": "fidelity-locked|creative-room",
@@ -96,7 +101,7 @@ Exact object (replace values from the supplied job; keep this structure):
       "relation": "category|function|material|provenance|scene_role|supporting_object",
       "value": "string",
       "basis": "observed|published|inferred|decision",
-      "evidence_reference_id": "reference_id or null"
+      "evidence_reference_id": "copy evidence[].reference_id for observed|published; null only for inferred|decision"
     }
   ],
   "unknowns": [
@@ -119,6 +124,9 @@ FORBIDDEN:
 - extra keys on route, scene, invariants, variables, required_outputs, or grounding.
 - protected identity as a variable value.
 - filling unknowns with invented evidence.
+- route.category that is not identical to contract.item.category.
+- grounding basis observed or published with a null evidence_reference_id.
+- inventing or guessing an evidence_reference_id.
 
 Variable names allowed only: room, styling, light, framing, authorised edits.
 Protected identity stays in invariants, never in variables.

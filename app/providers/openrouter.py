@@ -37,6 +37,7 @@ from app.contracts.generation import (
 from app.contracts.critique import CritiqueAssessment
 from app.contracts.stylist import StylistPlan
 from app.providers.brain import BrainProviderRequest
+from app.providers.brain_grounding import apply_brain_grounding_evidence, supplied_evidence_ids
 from app.providers.brain_instruction import brain_instruction
 from app.providers.critique import CritiqueProviderRequest
 from app.providers.critique_instruction import critique_instruction
@@ -49,6 +50,7 @@ from app.providers.living_room_eye_observation import (
 from app.providers.living_room_eye_prompt import living_room_eye_standing_prompt
 from app.providers.stylist import StylistProviderRequest
 from app.providers.stylist_instruction import stylist_instruction
+from app.stages.output_type import WHITE_BK_SKIP_VISUAL_ROLES, is_white_bk_compile_prompt
 
 
 
@@ -176,6 +178,8 @@ class OpenRouterBrainProvider:
 
     def reason(self, request: BrainProviderRequest) -> BrainPlan:
         payload = self._complete(request)
+        allowed = supplied_evidence_ids(request.brain_input.evidence)
+        payload = apply_brain_grounding_evidence(payload, allowed)
         try:
             return BrainPlan.model_validate(payload)
         except ValidationError as exc:
@@ -187,16 +191,24 @@ class OpenRouterBrainProvider:
 
     def _complete(self, request: BrainProviderRequest) -> dict[str, Any]:
         brain_input = request.brain_input
+        contract = brain_input.contract
         user_payload = {
             "job_id": brain_input.job_id,
             "contract_id": brain_input.contract_id,
             "revision": brain_input.revision,
             "stage": brain_input.stage,
             "state": brain_input.state,
-            "contract": brain_input.contract.model_dump(mode="json"),
+            "contract": contract.model_dump(mode="json"),
             "observation": brain_input.observation.model_dump(mode="json"),
             "readiness": brain_input.readiness.model_dump(mode="json"),
             "evidence": [item.model_dump(mode="json") for item in brain_input.evidence],
+            "copy_exactly": {
+                "route.category": contract.item.category,
+                "route.input_condition": contract.source_condition.input_condition,
+                "route.product_role": contract.item.product_role,
+                "mode": contract.changes.policy_mode,
+            },
+            "allowed_evidence_ids": [item.reference_id for item in brain_input.evidence],
         }
         body = {
             "model": request.model_id,
@@ -620,6 +632,7 @@ def generation_user_content(
 ) -> list[dict[str, Any]]:
     """Build ordered multimodal content from EngineCompile. Not category-specific."""
 
+    white_bk = is_white_bk_compile_prompt(operation.exact_prompt)
     parts: list[dict[str, Any]] = [
         {"type": "text", "text": operation.exact_prompt},
         {
@@ -646,6 +659,17 @@ def generation_user_content(
         media = _IMAGE_MEDIA.get(reference.media_type)
         image = reference_bytes.get(reference.reference_id)
         if media is None or not image:
+            continue
+        if white_bk and reference.role in WHITE_BK_SKIP_VISUAL_ROLES:
+            parts.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "Do not use this reference as the output scene. "
+                        "White BK requires the product alone on a pure white (#FFFFFF) background."
+                    ),
+                }
+            )
             continue
         encoded = base64.b64encode(image).decode("ascii")
         parts.append(

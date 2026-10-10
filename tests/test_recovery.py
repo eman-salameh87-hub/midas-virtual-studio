@@ -25,6 +25,7 @@ from app.providers.fake_repair import FakeRepairPlanner
 from app.providers.fake_stylist import FakeStylistProvider
 from app.runtime.artifacts import FilesystemArtifactStore, get_artifact_store
 from app.runtime.events import job_event
+from app.runtime.jobs import create_job_from_intake
 from app.runtime.recovery import reconstruct_job_record, recover_jobs_from_artifacts
 from app.runtime.state import InMemoryJobStore, JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
@@ -110,7 +111,7 @@ def _client(
 
 
 def _seed_through(client: TestClient, *, through: str) -> str:
-    job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, _contract()).job_id
     stages = [
         ("eye", f"/api/v1/jobs/{job_id}/eye", {}),
         ("brain", f"/api/v1/jobs/{job_id}/brain", {}),

@@ -19,7 +19,22 @@ Local development:
 http://127.0.0.1:8000
 ```
 
-Job routes are under `/api/v1`. Health is `GET /health`.
+Copy `.env.example` to `.env` in the repo root. python-dotenv loads that file
+(process environment wins). UIMidas Manual persist uses operator-provided
+`MIDAS_DEV_OWNER_ID` and `MIDAS_DEV_CONTRACT_ID` from `.env` when the POST
+body omits Architecture A identity. That is not production identity.
+`.env.example` is not loaded.
+
+Start the API with `uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
+and UIMidas with `npm run dev` in `UIMidas/` (`http://127.0.0.1:5173`). Vite
+proxies `/api` to this base URL.
+
+Job routes are under `/api/v1`. Health is `GET /health`. Client briefs are
+`POST /api/v1/client-briefs` and `GET /api/v1/client-briefs/{brief_id}`.
+`POST /api/v1/client-briefs/{brief_id}/jobs` maps a saved Manual one-by-one
+brief to Phase-0, creates a job, and schedules Eye → Brain → Stylist → Compile.
+It does not generate images. Unmapped Phase-0 fields return
+`BRIEF_MAPPING_UNRESOLVED` and leave the brief unchanged.
 
 ## 2. Authentication assumptions
 

@@ -69,6 +69,7 @@ from app.providers.openrouter import (
 from app.providers.fake_repair import FakeRepairPlanner
 from app.providers.repair import RepairPlanner
 from app.providers.stylist import StylistProvider
+from app.runtime.orchestrator import schedule_planning
 from app.runtime.jobs import (
     BrainNotReadyError,
     BrainNotRunError,
@@ -237,13 +238,19 @@ def _revision_mismatch(job_id: str, expected: int, actual: int) -> NoReturn:
         "The server derives source_hashes from those file digests and "
         "request_hash from the canonical contract. "
         "Bytes are stored on the job; they are not part of the frozen identity contract. "
-        "Eye is not executed. Unresolved placeholder values are rejected."
+        "The create response is the intake snapshot. Planning (Eye → Brain → Stylist → "
+        "Compile) is scheduled in-process after the response and is not durable across "
+        "process restart. Generate is not scheduled. Unresolved placeholder values are rejected."
     ),
     responses={422: _ERRORS[422]},
 )
 def post_job(
     body: CreateJobRequest,
     store: InMemoryJobStore = Depends(get_job_store),
+    eye_provider: EyeProvider = Depends(get_eye_provider),
+    brain_provider: BrainProvider = Depends(get_brain_provider),
+    stylist_provider: StylistProvider = Depends(get_stylist_provider),
+    compiler: EngineCompiler = Depends(get_engine_compiler),
 ) -> CreateJobResponse:
     try:
         record = create_job_from_intake(store, body.contract.model_dump(mode="python"))
@@ -254,6 +261,16 @@ def post_job(
             message="Invalid request",
             details={"reason": str(exc)},
         ) from exc
+    schedule_planning(
+        store,
+        job_id=record.job_id,
+        eye_provider=eye_provider,
+        brain_provider=brain_provider,
+        stylist_provider=stylist_provider,
+        compiler=compiler,
+        owner_id=record.owner_id,
+        revision=record.revision,
+    )
     return create_job_response(record)
 
 

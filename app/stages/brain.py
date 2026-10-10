@@ -98,7 +98,10 @@ def validate_brain_plan(brain_input: BrainInput, plan: BrainPlan) -> None:
     if plan.route.input_condition != contract.source_condition.input_condition:
         raise BrainPlanInvalidError("Brain route input_condition must match the contract")
     if plan.route.category != contract.item.category:
-        raise BrainPlanInvalidError("Brain route category must match the contract")
+        raise BrainPlanInvalidError(
+            "Brain route category must match the contract "
+            f"(expected {contract.item.category!r}, got {plan.route.category!r})"
+        )
     if plan.route.product_role != contract.item.product_role:
         raise BrainPlanInvalidError("Brain route product_role must match the contract")
 

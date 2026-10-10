@@ -14,6 +14,12 @@ from app.contracts.engine import (
 from app.contracts.job import OutputView
 from app.contracts.reference import ReferenceAsset
 from app.providers.engine import EngineInput, EngineProviderRequest
+from app.stages.output_type import (
+    is_white_bk,
+    source_marks,
+    user_requested_source_marks,
+    white_bk_prompt_rules,
+)
 
 
 class FakeEngineCompiler:
@@ -103,6 +109,12 @@ def compile_for(
             requested_view=requested_view,
             references=references,
         )
+        if violation == "lifestyle_scene":
+            exact_prompt = (
+                "Preserve the source product identity. "
+                "Place it in the approved styled interior under soft daylight. "
+                "Add a lifestyle scene with flooring and decorative props."
+            )
     elif violation == "ready_with_blank_prompt":
         # Invalid READY shape used only to exercise stage validation.
         status = "ready"
@@ -228,8 +240,23 @@ def _exact_prompt(
     if views.detail_focus:
         view_lines.append(f"- detail focus: {views.detail_focus}")
 
+    output_lines = [
+        f"Requested output type: {', '.join(contract.intent.requested_outcomes)}."
+    ]
+    if is_white_bk(contract):
+        output_lines.extend(
+            white_bk_prompt_rules(
+                marks=source_marks(engine_input.observation),
+                reproduce_requested=user_requested_source_marks(contract),
+            )
+        )
+        output_lines.append(
+            "White BK is authoritative over Stylist room or lifestyle language."
+        )
+
     parts = [
         "MIDAS Engine compile instruction.",
+        *output_lines,
         f"Category: {contract.item.department}/{contract.item.category}/{contract.item.subcategory}.",
         f"Product role: {stylist_plan.product_role}.",
         f"Hero prominence: {stylist_plan.hero_prominence}.",

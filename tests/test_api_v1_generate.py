@@ -15,6 +15,8 @@ from app.providers.fake_eye import FakeEyeProvider
 from app.providers.fake_generation import FAKE_OUTPUT_BYTES, FakeGenerationProvider
 from app.providers.fake_stylist import FakeStylistProvider
 from app.runtime.artifacts import get_artifact_store
+from app.runtime.jobs import create_job_from_intake
+from app.runtime.orchestrator import join_scheduled_planning
 from app.runtime.state import JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
 
@@ -96,7 +98,7 @@ def _client(provider: FakeGenerationProvider | None = None) -> TestClient:
 def _seed_compiled(client: TestClient) -> str:
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
-    job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
     assert client.post(f"/api/v1/jobs/{job_id}/eye", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
@@ -165,10 +167,21 @@ def test_generate_requires_compile() -> None:
     client = _client()
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
-    job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
     res = client.post(f"/api/v1/jobs/{job_id}/generate", json={})
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "EYE_NOT_RUN"
+
+
+def test_generate_after_scheduled_planning_requires_pre_approval() -> None:
+    client = _client()
+    contract_data = _contract().model_dump(mode="python")
+    contract_data["references"][0]["content_base64"] = PNG_B64
+    job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
+    assert join_scheduled_planning(job_id)
+    res = client.post(f"/api/v1/jobs/{job_id}/generate", json={})
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "PRE_GENERATION_APPROVAL_REQUIRED"
 
 
 def test_generate_owner_and_revision_mismatch() -> None:

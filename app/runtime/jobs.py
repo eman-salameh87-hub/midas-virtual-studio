@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from functools import wraps
+from typing import Any, NoReturn
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -23,6 +26,7 @@ from app.runtime.checksum import annotate_checksum
 from app.runtime.events import job_event
 from app.runtime.reference_metadata import measure_references
 from app.runtime.job import execute_eye_job
+from app.runtime.job_lock import locked_job
 from app.runtime.references import freeze_intake_payload, image_bytes_for_eye
 from app.runtime.state import (
     BrainInputMetadata,
@@ -70,6 +74,8 @@ from app.stages.repair import (
 )
 from app.stages.stylist import build_stylist_input, execute_stylist, stylist_may_proceed
 from app.contracts.repair import REPAIR_LIMIT, RepairPlan
+
+logger = logging.getLogger("app.runtime.jobs")
 
 
 class JobNotFoundError(Exception):
@@ -529,6 +535,98 @@ def load_engine_input(
     return build_engine_input(record)
 
 
+def planning_eye_is_complete(record: JobRecord) -> bool:
+    """True when a revision-bound Eye observation and readiness are already stored."""
+
+    if record.observation is None or record.readiness is None:
+        return False
+    return (
+        record.observation.contract_id == record.contract.contract_id
+        and record.observation.revision == record.revision
+    )
+
+
+def planning_brain_is_complete(record: JobRecord) -> bool:
+    """True when a completed Brain plan is bound to the current contract and Eye."""
+
+    if record.observation is None:
+        return False
+    stored = record.brain
+    if stored is None or stored.result is None or stored.status != "completed":
+        return False
+    plan = stored.result
+    return (
+        plan.contract_id == record.contract.contract_id
+        and plan.contract_revision == record.revision
+        and plan.observation_contract_id == record.observation.contract_id
+        and plan.observation_revision == record.observation.revision
+    )
+
+
+def planning_stylist_is_complete(record: JobRecord) -> bool:
+    """True when a completed Stylist plan is bound to the current contract and Brain."""
+
+    if record.brain is None or record.brain.result is None:
+        return False
+    stored = record.stylist
+    if stored is None or stored.result is None or stored.status != "completed":
+        return False
+    plan = stored.result
+    brain = record.brain.result
+    return (
+        plan.contract_id == record.contract.contract_id
+        and plan.contract_revision == record.revision
+        and plan.brain_contract_id == brain.contract_id
+        and plan.brain_revision == brain.contract_revision
+    )
+
+
+def planning_compile_is_complete(record: JobRecord) -> bool:
+    """True when a completed Engine compile is bound to the current contract revision."""
+
+    stored = record.engine
+    if stored is None or stored.result is None or stored.status != "completed":
+        return False
+    compile_artifact = stored.result
+    return (
+        compile_artifact.contract_id == record.contract.contract_id
+        and compile_artifact.contract_revision == record.revision
+    )
+
+
+def _locked_planning_stage(is_complete):
+    """Skip a planning stage when its artifact is already valid; hold the job lock."""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(
+            store: JobStore,
+            *,
+            job_id: str,
+            owner_id: str | None = None,
+            revision: int | None = None,
+            **kwargs,
+        ):
+            with locked_job(job_id):
+                record = get_job(
+                    store, job_id, owner_id=owner_id, revision=revision
+                )
+                if is_complete(record):
+                    return record
+                return func(
+                    store,
+                    job_id=job_id,
+                    owner_id=owner_id,
+                    revision=revision,
+                    **kwargs,
+                )
+
+        return wrapper
+
+    return decorator
+
+
+@_locked_planning_stage(planning_eye_is_complete)
 def execute_job_eye(
     store: JobStore,
     *,
@@ -604,6 +702,7 @@ def execute_job_eye(
     return updated
 
 
+@_locked_planning_stage(planning_brain_is_complete)
 def execute_job_brain(
     store: JobStore,
     *,
@@ -633,15 +732,9 @@ def execute_job_brain(
     except (ValueError, ValidationError) as exc:
         if isinstance(exc, ValueError) and str(exc) == "model_id must be supplied by the caller":
             raise
-        _commit(store, _brain_failed(record, model_id))
-        raise BrainProviderFailedError(
-            provider_failure_details(exc, provider)
-        ) from exc
+        _fail_brain_provider(store, record, job_id, model_id, provider, exc)
     except Exception as exc:
-        _commit(store, _brain_failed(record, model_id))
-        raise BrainProviderFailedError(
-            provider_failure_details(exc, provider)
-        ) from exc
+        _fail_brain_provider(store, record, job_id, model_id, provider, exc)
 
     current = get_job(store, job_id)
     if current.revision != result.plan.contract_revision:
@@ -687,7 +780,31 @@ def execute_job_brain(
     return updated
 
 
-def _brain_failed(record: JobRecord, model_id: str) -> JobRecord:
+def _fail_brain_provider(
+    store: JobStore,
+    record: JobRecord,
+    job_id: str,
+    model_id: str,
+    provider: BrainProvider,
+    exc: BaseException,
+) -> NoReturn:
+    details = provider_failure_details(exc, provider)
+    _commit(store, _brain_failed(record, model_id, details))
+    logger.warning(
+        "brain provider failed job_id=%s phase=%s exception_class=%s message=%s",
+        job_id,
+        details.get("phase"),
+        details.get("exception_class"),
+        details.get("message"),
+    )
+    raise BrainProviderFailedError(details) from exc
+
+
+def _brain_failed(
+    record: JobRecord,
+    model_id: str,
+    details: dict[str, Any] | None = None,
+) -> JobRecord:
     return record.model_copy(
         update={
             "stage": "brain",
@@ -696,6 +813,7 @@ def _brain_failed(record: JobRecord, model_id: str) -> JobRecord:
             "error": JobError(
                 code="PROVIDER_FAILURE",
                 message="Brain provider failed",
+                details=dict(details or {}),
             ),
             "brain": StoredBrain(
                 model_id=model_id,
@@ -717,6 +835,7 @@ def _brain_failed(record: JobRecord, model_id: str) -> JobRecord:
     )
 
 
+@_locked_planning_stage(planning_stylist_is_complete)
 def execute_job_stylist(
     store: JobStore,
     *,
@@ -832,6 +951,7 @@ def _stylist_failed(record: JobRecord, model_id: str) -> JobRecord:
     )
 
 
+@_locked_planning_stage(planning_compile_is_complete)
 def execute_job_compile(
     store: JobStore,
     *,

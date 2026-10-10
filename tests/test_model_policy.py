@@ -32,6 +32,7 @@ from app.runtime.model_policy import (
     stylist_model,
     validate_stage_model,
 )
+from app.runtime.jobs import create_job_from_intake
 from app.runtime.state import JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
 
@@ -131,9 +132,7 @@ def _client(
 
 
 def _create_job(client: TestClient) -> str:
-    res = client.post("/api/v1/jobs", json={"contract": _contract()})
-    assert res.status_code == 200, res.text
-    return res.json()["job_id"]
+    return create_job_from_intake(JOB_STORE, _contract()).job_id
 
 
 def _seed(client: TestClient, *, through: str) -> str:

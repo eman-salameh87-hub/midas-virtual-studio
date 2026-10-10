@@ -63,15 +63,7 @@ def plan_for(
     category = contract.item.category.casefold()
     subcategory = contract.item.subcategory.casefold()
 
-    # Determine frame from contract preferences or outputs
-    proportions_map = {
-        "Square · 1:1": "Square · 1:1",
-        "Portrait · 4:5": "Portrait · 4:5",
-        "Landscape · 16:9": "Landscape · 16:9",
-    }
-    frame: ImageProportions = proportions_map.get(
-        contract.outputs.image_proportions, "Landscape · 16:9"
-    )
+    frame: ImageProportions = contract.outputs.image_proportions
 
     # Determine hero prominence and presentation based on category and role
     if product_role == "hero":
@@ -139,15 +131,69 @@ def plan_for(
         )
         supporting_props = []
 
+    white_bk = "White BK" in contract.intent.requested_outcomes
+    if white_bk:
+        hero_prominence = (
+            f"The {contract.item.subcategory} is the sole subject on a pure white (#FFFFFF) background"
+        )
+        presentation = (
+            f"The {contract.item.subcategory} alone on a pure white (#FFFFFF) background; "
+            "no room, no lifestyle scene, no decorative props, no floor or wall scene, no added text or logos"
+        )
+        functional_use = "Catalogue white-background product shot"
+        view_reqs = StylistViewRequirements(
+            close_up_requirements=(
+                f"Close-up of {contract.item.subcategory} on a pure white (#FFFFFF) background"
+            ),
+            wide_view_requirements=(
+                "Product alone on a pure white (#FFFFFF) background; no room, no lifestyle scene"
+            ),
+            detail_focus="Product construction and materials only; do not add logos or text",
+        )
+        supporting_props = []
+        verified_complements = []
+
     # Lighting and setting derived from preferences and contract
     wall_color = contract.preferences.wall
     floor_finish = contract.preferences.floor
     light_pref = contract.preferences.lighting
     mood_pref = contract.preferences.mood
 
-    setting = f"A {mood_pref.lower()} interior with {wall_color.lower()} walls and {floor_finish.lower()} flooring, tailored to complement the product."
-    light = f"{light_pref} illuminating the space gently from natural window openings."
-    camera = f"Eye-level shot keeping all product pieces completely visible, unobstructed, and clearly countable."
+    if white_bk:
+        setting = (
+            "Pure white (#FFFFFF) studio background. Product alone. "
+            "No room, no lifestyle scene, no decorative props, no floor or wall scene."
+        )
+        light = (
+            f"{light_pref} on the product against a pure white (#FFFFFF) background. "
+            "No interior window or room lighting scene."
+        )
+        camera = (
+            "Eye-level product shot keeping all product pieces completely visible, "
+            "unobstructed, and clearly countable."
+        )
+        surfaces = "Pure white (#FFFFFF) background only; no floor or wall scene"
+        palette = "Pure white (#FFFFFF) background; preserve product color unchanged"
+        spacing = "Product centered in an empty white field"
+        circulation = "No room circulation; product-only frame"
+        arrangement_detail = (
+            "Hero alone on pure white (#FFFFFF); no props, no room, no lifestyle scene"
+        )
+    else:
+        setting = (
+            f"A {mood_pref.lower()} interior with {wall_color.lower()} walls and "
+            f"{floor_finish.lower()} flooring, tailored to complement the product."
+        )
+        light = f"{light_pref} illuminating the space gently from natural window openings."
+        camera = (
+            "Eye-level shot keeping all product pieces completely visible, "
+            "unobstructed, and clearly countable."
+        )
+        surfaces = f"{floor_finish} flooring with smooth {wall_color} wall surfaces"
+        palette = f"{wall_color}, {floor_finish}, and complementary neutral accents"
+        spacing = "Generous functional spacing and clear circulation paths"
+        circulation = "Clear 80cm walkways around main pieces"
+        arrangement_detail = "Hero centered with realistic placement and clear sightlines"
 
     scene = StylistScene(
         frame=frame,
@@ -179,11 +225,11 @@ def plan_for(
         board_id="board-primary-cohesive",
         name=f"Cohesive {contract.preferences.mood}",
         focal_hierarchy=hero_prominence,
-        palette=f"{wall_color}, {floor_finish}, and complementary neutral accents",
-        spacing="Generous functional spacing and clear circulation paths",
-        surfaces=f"{floor_finish} flooring with smooth {wall_color} wall surfaces",
+        palette=palette,
+        spacing=spacing,
+        surfaces=surfaces,
         lighting=light,
-        circulation="Clear 80cm walkways around main pieces",
+        circulation=circulation,
         companion_skus=companion_skus,
     )
 
@@ -202,12 +248,12 @@ def plan_for(
     selected_layout = SelectedLayout(
         board_id="board-primary-cohesive" if violation != "invalid_board" else "board-nonexistent",
         focal_hierarchy=hero_prominence,
-        palette=f"{wall_color}, {floor_finish}, and complementary neutral accents",
-        spacing="Generous functional spacing and clear circulation paths",
-        surfaces=f"{floor_finish} flooring with smooth {wall_color} wall surfaces",
+        palette=palette,
+        spacing=spacing,
+        surfaces=surfaces,
         lighting=light,
-        circulation="Clear 80cm walkways around main pieces",
-        arrangement_detail=f"Hero centered with realistic placement and clear sightlines",
+        circulation=circulation,
+        arrangement_detail=arrangement_detail,
         functional_use=functional_use,
     )
 

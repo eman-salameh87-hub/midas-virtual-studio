@@ -6,6 +6,11 @@ contract. Does not repair or release. Does not choose a model.
 
 from app.contracts.critique import LOCK_DIMENSIONS, AttributeDrift, CritiqueAssessment
 from app.contracts.engine import EngineCompile
+from app.stages.output_type import (
+    is_white_bk,
+    white_bk_background_checks,
+    white_bk_logo_checks,
+)
 from app.providers.critique import (
     CritiqueInput,
     CritiqueProvider,
@@ -155,6 +160,23 @@ def validate_critique_assessment(
             "overall pass cannot override inventory, identity, or geometry failure"
         )
     _require_review_sections(assessment)
+    if is_white_bk(critique_input.contract) and assessment.status == "ready":
+        background = white_bk_background_checks(assessment)
+        logos = white_bk_logo_checks(assessment)
+        if not background:
+            raise CritiqueAssessmentInvalidError(
+                "White BK critique must check background purity and scene/props"
+            )
+        if not logos:
+            raise CritiqueAssessmentInvalidError(
+                "White BK critique must check unwanted logos or text"
+            )
+        if assessment.overall_result == "pass":
+            for item in (*background, *logos):
+                if item.result != "pass":
+                    raise CritiqueAssessmentInvalidError(
+                        "White BK overall pass cannot override an output-type failure or unverified check"
+                    )
 
 
 def _require_review_sections(assessment: CritiqueAssessment) -> None:

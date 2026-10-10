@@ -1,5 +1,7 @@
 """Public JSON DTOs for the versioned jobs API."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
@@ -10,7 +12,7 @@ from app.contracts.eye import EyeObservation
 from app.contracts.generation import GenerationOperation, GenerationReceipt
 from app.contracts.job import Phase0JobContract, RequestIdentity
 from app.contracts.reference import ReferenceAsset
-from app.contracts.repair import RepairPlan
+from app.contracts.repair import REPAIR_LIMIT, RepairPlan
 from app.contracts.stylist import StylistPlan
 from app.runtime.model_policy import (
     brain_model,
@@ -22,6 +24,9 @@ from app.runtime.model_policy import (
 from app.contracts.review import ReviewStatus
 from app.runtime.state import JobError, JobRecord, JobStage, JobState
 from app.stages.eye import Readiness
+from app.stages.repair import critique_matches_generation, repair_is_eligible
+
+PublicCostStatus = Literal["known", "unknown", "not_recorded"]
 
 
 def _stage_schema_extra(stage: str, model_func: object) -> object:
@@ -544,6 +549,17 @@ class JobEyeView(BaseModel):
     readiness: Readiness
 
 
+class PublicGenerationCost(BaseModel):
+    """Provider-recorded cost for one generation. Unknown is never stored as zero."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    output_id: str | None = None
+    amount: float | None = None
+    currency: str | None = None
+    status: PublicCostStatus
+
+
 class JobView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -562,6 +578,17 @@ class JobView(BaseModel):
     generation_available: bool
     critique_available: bool
     repair_available: bool
+    repair_eligible: bool
+    critique_overall_result: str | None = None
+    critique_matches_generation: bool = False
+    generation_output_available: bool = False
+    generation_output_id: str | None = None
+    generation_cost: PublicGenerationCost | None = None
+    initial_generation_cost: PublicGenerationCost | None = None
+    repair_generation_cost: PublicGenerationCost | None = None
+    generation_cost_total: PublicGenerationCost | None = None
+    repair_count: int = 0
+    repair_limit: int = 2
     eye: JobEyeView | None
     brain: BrainView | None
     stylist: StylistView | None
@@ -592,6 +619,17 @@ class JobStatusView(BaseModel):
     generation_available: bool
     critique_available: bool
     repair_available: bool
+    repair_eligible: bool
+    critique_overall_result: str | None = None
+    critique_matches_generation: bool = False
+    generation_output_available: bool = False
+    generation_output_id: str | None = None
+    generation_cost: PublicGenerationCost | None = None
+    initial_generation_cost: PublicGenerationCost | None = None
+    repair_generation_cost: PublicGenerationCost | None = None
+    generation_cost_total: PublicGenerationCost | None = None
+    repair_count: int = 0
+    repair_limit: int = 2
     hold: Readiness | None
     error: JobError | None
     review_status: ReviewStatus | None = None
@@ -882,6 +920,7 @@ def job_view(record: JobRecord) -> JobView:
     generation = _generation_view(record)
     critique = _critique_view(record)
     repair = _repair_view(record)
+    flags = _repair_status_flags(record)
     return JobView(
         job_id=record.job_id,
         owner_id=record.owner_id,
@@ -898,6 +937,7 @@ def job_view(record: JobRecord) -> JobView:
         generation_available=generation is not None and generation.receipt is not None,
         critique_available=critique is not None,
         repair_available=repair is not None,
+        **flags,
         eye=eye,
         brain=brain,
         stylist=stylist,
@@ -916,8 +956,108 @@ def job_view(record: JobRecord) -> JobView:
     )
 
 
+def _receipt_output_id(receipt: GenerationReceipt | None) -> str | None:
+    if receipt is None or receipt.output is None:
+        return None
+    return receipt.output.output_id
+
+
+def _public_generation_cost(receipt: GenerationReceipt | None, output_id: str | None) -> PublicGenerationCost:
+    if receipt is None or receipt.provider_cost is None:
+        return PublicGenerationCost(
+            output_id=output_id,
+            amount=None,
+            currency=None,
+            status="not_recorded",
+        )
+    cost = receipt.provider_cost
+    return PublicGenerationCost(
+        output_id=output_id,
+        amount=cost.amount,
+        currency=cost.currency,
+        status=cost.status,
+    )
+
+
+def _same_recorded_currency(left: str | None, right: str | None) -> bool:
+    if left is None and right is None:
+        return True
+    if left is None or right is None:
+        return False
+    return left.casefold() == right.casefold()
+
+
+def _generation_cost_flags(record: JobRecord) -> dict[str, object]:
+    stored = record.generation
+    current_receipt = None if stored is None else stored.receipt
+    current_id = _receipt_output_id(current_receipt)
+    current_cost = None if stored is None else _public_generation_cost(current_receipt, current_id)
+
+    history = [item for item in record.generation_history if item is not None]
+    initial = history[0] if history else stored
+    initial_receipt = None if initial is None else initial.receipt
+    initial_cost = (
+        None
+        if initial is None
+        else _public_generation_cost(initial_receipt, _receipt_output_id(initial_receipt))
+    )
+    repair_cost = current_cost if record.repair_count > 0 and history and current_cost is not None else None
+
+    lineage = [*history]
+    if stored is not None:
+        lineage.append(stored)
+    total: PublicGenerationCost | None = None
+    if len(lineage) > 1:
+        currency: str | None = None
+        amount = 0.0
+        complete = True
+        for item in lineage:
+            view = _public_generation_cost(
+                None if item is None else item.receipt,
+                _receipt_output_id(None if item is None else item.receipt),
+            )
+            if view.status != "known" or view.amount is None:
+                complete = False
+                break
+            if currency is None:
+                currency = view.currency
+            elif not _same_recorded_currency(currency, view.currency):
+                complete = False
+                break
+            amount += view.amount
+        if complete:
+            total = PublicGenerationCost(
+                output_id=None,
+                amount=amount,
+                currency=currency,
+                status="known",
+            )
+
+    return {
+        "generation_output_id": current_id,
+        "generation_cost": current_cost,
+        "initial_generation_cost": initial_cost if history else None,
+        "repair_generation_cost": repair_cost,
+        "generation_cost_total": total,
+    }
+
+
+def _repair_status_flags(record: JobRecord) -> dict[str, object]:
+    assessment = record.critique.result if record.critique is not None else None
+    return {
+        "repair_eligible": repair_is_eligible(record),
+        "critique_overall_result": assessment.overall_result if assessment is not None else None,
+        "critique_matches_generation": critique_matches_generation(record),
+        "generation_output_available": generation_output_available(record),
+        "repair_count": record.repair_count,
+        "repair_limit": record.repair_limit if record.repair_limit else REPAIR_LIMIT,
+        **_generation_cost_flags(record),
+    }
+
+
 def job_status_view(record: JobRecord) -> JobStatusView:
     ready = record.readiness is not None and record.readiness.status == "ready"
+    flags = _repair_status_flags(record)
     return JobStatusView(
         job_id=record.job_id,
         owner_id=record.owner_id,
@@ -934,6 +1074,7 @@ def job_status_view(record: JobRecord) -> JobStatusView:
         and record.generation.receipt is not None,
         critique_available=_critique_view(record) is not None,
         repair_available=_repair_view(record) is not None,
+        **flags,
         hold=record.hold,
         error=record.error,
         review_status=record.review_status,

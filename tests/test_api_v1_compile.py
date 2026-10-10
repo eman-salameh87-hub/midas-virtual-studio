@@ -12,6 +12,7 @@ from app.providers.fake_brain import FakeBrainProvider
 from app.providers.fake_engine import FakeEngineCompiler
 from app.providers.fake_eye import FakeEyeProvider
 from app.providers.fake_stylist import FakeStylistProvider
+from app.runtime.jobs import create_job_from_intake
 from app.runtime.model_policy import image_model
 from app.runtime.state import JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
@@ -93,9 +94,7 @@ def _client(compiler: FakeEngineCompiler | None = None) -> TestClient:
 def _seed_styled(client: TestClient) -> str:
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
-    res = client.post("/api/v1/jobs", json={"contract": contract_data})
-    assert res.status_code == 200, res.text
-    job_id = res.json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
     assert client.post(f"/api/v1/jobs/{job_id}/eye", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
@@ -158,7 +157,7 @@ def test_compile_requires_prior_stages() -> None:
     client = _client()
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
-    job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
 
     res = client.post(f"/api/v1/jobs/{job_id}/compile", json={})
     assert res.status_code == 409
@@ -177,7 +176,12 @@ def test_compile_requires_prior_stages() -> None:
 
 def test_get_compile_not_run() -> None:
     client = _client()
-    job_id = _seed_styled(client)
+    contract_data = _contract().model_dump(mode="python")
+    contract_data["references"][0]["content_base64"] = PNG_B64
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
+    assert client.post(f"/api/v1/jobs/{job_id}/eye", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
     res = client.get(f"/api/v1/jobs/{job_id}/compile")
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "ENGINE_NOT_RUN"
@@ -193,7 +197,7 @@ def test_stylist_hold_blocks_compile_api() -> None:
 
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
-    job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
     client.post(f"/api/v1/jobs/{job_id}/eye", json={})
     client.post(f"/api/v1/jobs/{job_id}/brain", json={})
     stylist = client.post(f"/api/v1/jobs/{job_id}/stylist", json={})

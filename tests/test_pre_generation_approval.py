@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from app.contracts.generation import ProviderCostEvidence, ProviderUsageEvidence
 from app.providers.fake_critique import FakeCritiqueProvider
 from app.providers.fake_generation import FakeGenerationProvider
-from app.runtime.jobs import ReleaseNotReadyError, release_job
+from app.runtime.jobs import ReleaseNotReadyError, create_job_from_intake, release_job
 from app.runtime.recovery import recover_jobs_from_artifacts
 from app.runtime.state import JOB_STORE
 from app.stages.package import build_delivery_manifest
@@ -18,7 +18,7 @@ from tests.test_repair import _seed_critiqued
 def _compiled(client: TestClient) -> str:
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
-    job_id = client.post("/api/v1/jobs", json={"contract": contract_data}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
     for stage in ("eye", "brain", "stylist", "compile"):
         response = client.post(f"/api/v1/jobs/{job_id}/{stage}", json={})
         assert response.status_code == 200, response.text

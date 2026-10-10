@@ -1,8 +1,8 @@
 """MIDAS backend application.
 
-GET /health reports process status. Jobs live under /api/v1. Eye, Brain,
-Stylist, Compile, Generate, Critique · assess, and Critique · repair are
-explicit follow-up calls. Release is not implemented.
+GET /health reports process status. Jobs live under /api/v1. POST /jobs
+schedules in-process planning (Eye → Brain → Stylist → Compile). Generate,
+Critique, repair, approval, and release remain explicit follow-up calls.
 """
 
 import json
@@ -11,12 +11,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 
 from app.api.errors import ApiError, ErrorResponse, api_error_handler, request_validation_handler
+from app.api.client_briefs import router as client_briefs_router
 from app.api.jobs import router as jobs_router
+from app.runtime.client_briefs import CLIENT_BRIEF_STORE, recover_client_briefs_from_artifacts
 from app.runtime.recovery import recover_jobs_from_artifacts
 from app.runtime.state import JOB_STORE
 
@@ -28,12 +31,29 @@ async def lifespan(_app: FastAPI):
     recovered = recover_jobs_from_artifacts(JOB_STORE)
     if recovered:
         logger.info("recovered %s job(s) from local artifacts", len(recovered))
+    brief_recovery = recover_client_briefs_from_artifacts(CLIENT_BRIEF_STORE)
+    if brief_recovery.recovered:
+        logger.info(
+            "recovered %s client brief(s) from local artifacts",
+            len(brief_recovery.recovered),
+        )
+    for error in brief_recovery.errors:
+        logger.error(
+            "client brief recovery failed brief_id=%s code=%s reason=%s",
+            error.brief_id,
+            error.code,
+            error.reason,
+        )
+    # Do not auto-resume planning. Recovery restores artifacts only. Restarting
+    # Eye/Brain/Stylist after an ambiguous crash could repeat a provider call.
     yield
 
 
 # Swagger UI groups operations by path. This order is display-only.
 POST_DOC_PATHS = (
     "/api/v1/jobs",
+    "/api/v1/client-briefs",
+    "/api/v1/client-briefs/{brief_id}/jobs",
     "/api/v1/jobs/{job_id}/eye",
     "/api/v1/jobs/{job_id}/brain",
     "/api/v1/jobs/{job_id}/stylist",
@@ -47,6 +67,7 @@ POST_DOC_PATHS = (
 )
 GET_DOC_PATHS = (
     "/api/v1/jobs/{job_id}",
+    "/api/v1/client-briefs/{brief_id}",
     "/api/v1/jobs/{job_id}/eye",
     "/api/v1/jobs/{job_id}/brain",
     "/api/v1/jobs/{job_id}/stylist",
@@ -77,7 +98,17 @@ app = FastAPI(
 )
 app.add_exception_handler(ApiError, api_error_handler)
 app.add_exception_handler(RequestValidationError, request_validation_handler)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 app.include_router(jobs_router)
+app.include_router(client_briefs_router)
 
 
 def _openapi() -> dict:

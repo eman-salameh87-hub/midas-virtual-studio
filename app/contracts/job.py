@@ -42,8 +42,27 @@ RequestedOutcome = Literal[
     "Create with this item",
     "Others",
 ]
-OutputView = Literal["Wide view", "Close-up", "Wide view + close-up"]
-ImageProportions = Literal["Square · 1:1", "Portrait · 4:5", "Landscape · 16:9"]
+OutputView = Literal[
+    "Wide view",
+    "Close-up",
+    "Wide view + close-up",
+    "Front",
+    "Three-quarter",
+    "Side",
+    "Back",
+    "Top",
+    "Detail",
+    "In situ",
+]
+ImageProportions = Literal[
+    "Square · 1:1",
+    "Portrait · 4:5",
+    "Landscape · 16:9",
+    "3:4",
+    "4:3",
+    "9:16",
+    "2:3",
+]
 Resolution = Literal["2K", "4K"]
 PackageMember = Literal[
     "catalogue",

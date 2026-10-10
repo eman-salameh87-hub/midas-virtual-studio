@@ -19,6 +19,7 @@ from app.runtime.jobs import (
     release_job,
 )
 from app.runtime.pixels import inspect_image
+from app.runtime.orchestrator import join_scheduled_planning
 from app.runtime.recovery import recover_jobs_from_artifacts
 from app.runtime.state import JOB_STORE, InMemoryJobStore
 from app.stages.critique import record_view_drift
@@ -278,6 +279,7 @@ def test_recovery_and_artifact_names_and_model_id_stay_intact() -> None:
             assert approved.status_code == 200, approved.text
         response = client.post(f"/api/v1/jobs/{job_id}/{path}", json={})
         assert response.status_code == 200, response.text
+    assert join_scheduled_planning(job_id)
     JOB_STORE.clear()
     recovered = recover_jobs_from_artifacts(JOB_STORE)
     assert job_id in recovered

@@ -105,12 +105,21 @@ def plan_for(brain_input: BrainInput, *, violation: str | None = None) -> BrainP
                         detail="unresolved Eye ambiguity",
                     )
                 )
+    white_bk = "White BK" in contract.intent.requested_outcomes
     required = [
         BrainRequiredOutput(
             output=member,
             acceptance_checks=[
                 "preserve protected identity",
                 "keep user-selected count",
+                *(
+                    [
+                        "pure white (#FFFFFF) background",
+                        "product alone; no room or lifestyle scene",
+                    ]
+                    if white_bk
+                    else []
+                ),
             ],
         )
         for member in contract.outputs.package_members
@@ -128,7 +137,11 @@ def plan_for(brain_input: BrainInput, *, violation: str | None = None) -> BrainP
             operation=operation,
             reason=_route_reason(contract, operation),
             input_condition=contract.source_condition.input_condition,
-            category=contract.item.category,
+            category=(
+                "Living Rooms"
+                if violation == "wrong_category"
+                else contract.item.category
+            ),
             product_role=contract.item.product_role,
         ),
         mode=contract.changes.policy_mode,
@@ -155,7 +168,11 @@ def plan_for(brain_input: BrainInput, *, violation: str | None = None) -> BrainP
                 relation="provenance",
                 value=evidence_id or "contract.references",
                 basis="observed" if evidence_id else "decision",
-                evidence_reference_id=evidence_id,
+                evidence_reference_id=(
+                    "not-in-evidence"
+                    if violation == "unknown_grounding"
+                    else evidence_id
+                ),
             ),
         ],
         unknowns=unknowns,

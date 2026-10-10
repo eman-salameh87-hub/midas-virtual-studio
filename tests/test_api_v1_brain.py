@@ -8,6 +8,7 @@ from app.contracts.job import Phase0JobContract
 from app.main import app
 from app.providers.fake_brain import FakeBrainProvider, plan_for
 from app.providers.fake_eye import FakeEyeProvider
+from app.runtime.jobs import create_job_from_intake
 from app.runtime.model_policy import brain_model
 from app.runtime.state import JOB_STORE
 from app.stages.brain import build_brain_input
@@ -89,9 +90,7 @@ def _client() -> TestClient:
 
 
 def _create_job(client: TestClient) -> str:
-    response = client.post("/api/v1/jobs", json={"contract": _intake()})
-    assert response.status_code == 200, response.text
-    return response.json()["job_id"]
+    return create_job_from_intake(JOB_STORE, _intake()).job_id
 
 
 def _run_eye(client: TestClient, job_id: str) -> None:
@@ -119,7 +118,7 @@ def test_post_brain_unknown_job_returns_404() -> None:
 
 def test_post_brain_before_eye_returns_conflict() -> None:
     client = _client()
-    job_id = _create_job(client)
+    job_id = create_job_from_intake(JOB_STORE, _intake()).job_id
 
     response = client.post(
         f"/api/v1/jobs/{job_id}/brain",
@@ -219,7 +218,7 @@ def test_get_brain_returns_stored_result_without_rerun() -> None:
 
 def test_get_brain_before_eye_returns_eye_not_run() -> None:
     client = _client()
-    job_id = _create_job(client)
+    job_id = create_job_from_intake(JOB_STORE, _intake()).job_id
     response = client.get(f"/api/v1/jobs/{job_id}/brain")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "EYE_NOT_RUN"
@@ -227,7 +226,7 @@ def test_get_brain_before_eye_returns_eye_not_run() -> None:
 
 def test_get_brain_after_eye_before_brain_returns_brain_not_run() -> None:
     client = _client()
-    job_id = _create_job(client)
+    job_id = create_job_from_intake(JOB_STORE, _intake()).job_id
     _run_eye(client, job_id)
     response = client.get(f"/api/v1/jobs/{job_id}/brain")
     assert response.status_code == 409
@@ -323,14 +322,22 @@ def test_brain_provider_failure_hides_internals() -> None:
     assert stored.state == "failed"
     assert stored.error is not None
     assert stored.error.code == "PROVIDER_FAILURE"
+    assert stored.error.message == "Brain provider failed"
+    assert stored.error.details["exception_class"] == "RuntimeError"
+    assert stored.error.details["phase"] == "http_request"
+    assert "secret" not in str(stored.error.details).lower()
+    status = client.get(f"/api/v1/jobs/{job_id}/status")
+    assert status.status_code == 200
+    status_error = status.json()["error"]
+    assert status_error["code"] == "PROVIDER_FAILURE"
+    assert status_error["message"] == "Brain provider failed"
+    assert status_error["details"] == stored.error.details
     assert stored.observation is not None
 
 
 def test_end_to_end_job_eye_brain_persistence() -> None:
     client = _client()
-    created = client.post("/api/v1/jobs", json={"contract": _intake()})
-    assert created.status_code == 200
-    job_id = created.json()["job_id"]
+    job_id = _create_job(client)
 
     eye = client.post(
         f"/api/v1/jobs/{job_id}/eye",

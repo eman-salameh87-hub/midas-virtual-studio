@@ -7,6 +7,7 @@ from app.main import app
 from app.providers.fake_brain import FakeBrainProvider
 from app.providers.fake_eye import FakeEyeProvider
 from app.providers.fake_stylist import FakeStylistProvider
+from app.runtime.jobs import create_job_from_intake
 from app.runtime.model_policy import stylist_model
 from app.runtime.state import JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
@@ -87,9 +88,7 @@ def _client() -> TestClient:
 def _seed_job(client: TestClient) -> str:
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
-    res = client.post("/api/v1/jobs", json={"contract": contract_data})
-    assert res.status_code == 200, res.text
-    job_id = res.json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
 
     eye_res = client.post(f"/api/v1/jobs/{job_id}/eye", json={})
     assert eye_res.status_code == 200, eye_res.text
@@ -166,8 +165,7 @@ def test_stylist_brain_not_run() -> None:
     client = _client()
     contract_data = _contract().model_dump(mode="python")
     contract_data["references"][0]["content_base64"] = PNG_B64
-    res = client.post("/api/v1/jobs", json={"contract": contract_data})
-    job_id = res.json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, contract_data).job_id
     client.post(f"/api/v1/jobs/{job_id}/eye", json={})
 
     res = client.post(f"/api/v1/jobs/{job_id}/stylist", json={})

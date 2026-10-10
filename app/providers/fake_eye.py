@@ -12,6 +12,7 @@ from app.providers.eye import EyeProviderRequest
 ObservationKind = Literal[
     "ready",
     "ready_with_unknown",
+    "ready_with_logo",
     "critical_identity_ambiguity",
     "unresolved_identity",
     "conflicting_critical_evidence",
@@ -58,7 +59,7 @@ def observation_for(eye_input: EyeInput, kind: ObservationKind) -> EyeObservatio
                 "evidence_reference_ids": [reference.reference_id],
             }
         )
-    if kind in {"ready", "ready_with_unknown"}:
+    if kind in {"ready", "ready_with_unknown", "ready_with_logo"}:
         conflicts.append(
             {
                 "subject": "colour",
@@ -112,7 +113,18 @@ def observation_for(eye_input: EyeInput, kind: ObservationKind) -> EyeObservatio
             "parsing_limitations": [],
             "relations": [],
             "regions": [],
-            "signals": [],
+            "signals": (
+                [
+                    {
+                        "mark": "vendor watermark ACME",
+                        "reading": None,
+                        "evidence_reference_id": reference.reference_id,
+                        "content_hash": reference.content_hash,
+                    }
+                ]
+                if kind == "ready_with_logo"
+                else []
+            ),
             "shown_views": [],
             "change_log": [],
         }

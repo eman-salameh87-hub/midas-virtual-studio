@@ -57,12 +57,18 @@ CritiqueExecutionStatus = Literal["completed", "failed"]
 
 
 class JobError(BaseModel):
-    """Public-safe job error. Provider internals are not stored here."""
+    """Public-safe job error.
+
+    ``details`` holds sanitized diagnostics (exception class, phase, message,
+    validation errors). It must not include API keys, Authorization headers,
+    image bytes, or full provider payloads.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     code: str = Field(min_length=1)
     message: str = Field(min_length=1)
+    details: dict[str, object] = Field(default_factory=dict)
 
 
 class BrainInputMetadata(BaseModel):

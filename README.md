@@ -113,23 +113,45 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Create `.env` from `.env.example` and configure:
+Create `.env` from `.env.example` in the repo root:
+
+```powershell
+copy .env.example .env
+```
+
+Set `OPENROUTER_API_KEY` if you will call live providers. For UIMidas Manual persist (no jobs, no generation), set the operator-provided local labels in that `.env`:
 
 ```text
-OPENROUTER_API_KEY=...
+MIDAS_DEV_OWNER_ID=...
+MIDAS_DEV_CONTRACT_ID=...
 ```
+
+Those labels are not production identity. The backend loads `.env` with python-dotenv and does not require PowerShell `$env:` assignments. `.env.example` is not loaded.
 
 ## Run
 
+Backend (from the repo root, with the venv active):
+
 ```powershell
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+UIMidas (separate terminal):
+
+```powershell
+cd UIMidas
+npm install
+npm run dev
 ```
 
 Then open:
 
 ```text
+http://127.0.0.1:5173
 http://127.0.0.1:8000/docs
 ```
+
+Vite proxies `/api` to the backend. Manual Review persists a brief only. Set `VITE_USE_MOCK_SUBMIT=true` in `UIMidas/.env.local` to keep the in-browser mock instead.
 
 ## Tests
 
@@ -191,15 +213,3 @@ Reference metadata and checksums are recorded from the stored bytes. A checksum 
 ## Recovery
 
 On startup the process rebuilds in-memory jobs from `outputs/<job_id>/` (`MIDAS_OUTPUTS_DIR` overrides the directory). It loads the saved receipts. It does not call OpenRouter. A completed, held, or uncertain generation receipt blocks another paid dispatch for that operation.
-
-## Live proof
-
-One live end-to-end job has completed this path:
-
-`dd169c6b-fc47-46e3-bd28-20bc002f348b`
-
-Eye observed one dining table and six dining chairs from the reference. The contract category is Dining Sets. The path was Create, Eye, Brain, Stylist, Compile, pre-generation approval, OpenRouter generate, pixel validation, Critique pass, final owner approval, and release.
-
-The generated file is a 2048×2048 PNG. The provider request was `resolution=2K` and `aspect_ratio=1:1`. Format check passed. The provider-reported cost on the receipt is `0.102204` with status `known`. The response did not include a currency, so currency is null. Final job state is `released`, with `complete=true`, `releasable=true`, and an owner approval record.
-
-This proves that one case. It does not prove every product category, a Midas companion or SKU workflow, or a live repair-required case.
