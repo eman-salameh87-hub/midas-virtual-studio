@@ -103,6 +103,8 @@ app.add_middleware(
     allow_origins=[
         "http://127.0.0.1:5173",
         "http://localhost:5173",
+        "http://newaeonjo-001-site7.atempurl.com",
+        "https://newaeonjo-001-site7.atempurl.com",
     ],
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
