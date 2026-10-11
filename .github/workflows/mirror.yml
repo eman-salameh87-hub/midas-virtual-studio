@@ -1,0 +1,12 @@
+name: Mirror to Railway repo
+on:
+  push:
+    branches: [main]
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: git push --force https://x-access-token:${{ secrets.MIRROR_TOKEN }}@github.com/eman-salameh87-hub/midas-virtual-studio.git HEAD:main
