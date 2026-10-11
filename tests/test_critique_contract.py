@@ -87,6 +87,8 @@ def test_instruction_reserves_critical_severity_for_non_passing_findings() -> No
     assert 'A passing finding must not use severity "critical"' in text
     assert 'severity "critical" is only for a non-passing finding' in text
     assert 'result "fail" must not use severity "info"' in text
+    assert "White BK" in text
+    assert "pure white (#FFFFFF)" in text
 
 
 def test_provider_reports_pass_critical_without_changing_it(monkeypatch: pytest.MonkeyPatch) -> None:

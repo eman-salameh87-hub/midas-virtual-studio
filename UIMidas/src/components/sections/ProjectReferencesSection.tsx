@@ -11,6 +11,7 @@ import {
 import type { ReferencesDraft } from "../../types/draft";
 import { loadMidasCatalogue } from "../../data/midasCatalogue";
 import { MidasProductDialog, MidasSelectionList, useMidasCatalogue } from "../references/MidasProductPicker";
+import { StudioSelect } from "../ui/StudioSelect";
 
 type ReferencePick = LocalIntakeKind | "detail" | "other_view" | "midas";
 type UpdateReferences = (update: (current: ReferencesDraft) => ReferencesDraft) => void;
@@ -104,19 +105,11 @@ export function ProjectReferencesSection({
 
       <label className="select-field select-field--type">
         <span>Reference type</span>
-        <select
+        <StudioSelect
           value={kind}
-          onChange={(event) => {
-            const next = event.target.value as ReferencePick;
-            setKind(next);
-          }}
-        >
-          {fileTypes.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          options={fileTypes}
+          onChange={(next) => setKind(next as ReferencePick)}
+        />
       </label>
 
       <label className="upload">

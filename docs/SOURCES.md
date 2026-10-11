@@ -18,9 +18,9 @@ The 21 MIDAS responsibilities are logical responsibilities. They are not 21 agen
 
 Living Room material in this directory is historical execution evidence only. It must not become a Living-Room-specific workflow. The backend is generalized across furniture and product categories.
 
-Magnific material is historical provider evidence only. It must not become a dependency of this backend.
+Magnific material is historical provider evidence only. It is not the image-generation provider for this backend. Live image generation uses the OpenRouter Image API. The default image model in this implementation is `google/gemini-3.1-flash-image`. Planning stages default to `openai/gpt-4.1`.
 
-Historical provider names and model ids found in evidence are not automatically a production registry. A model id, when one is needed, is supplied on the job. This milestone does not select a model.
+Historical provider names and model ids found in evidence are not automatically a production registry. A caller may send an allowed `model_id`. Generate still has to match the model compiled onto the job.
 
 ## handoff
 

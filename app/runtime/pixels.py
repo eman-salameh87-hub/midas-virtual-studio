@@ -19,6 +19,10 @@ _ASPECT_TOKEN = {
     "Square · 1:1": "1:1",
     "Portrait · 4:5": "4:5",
     "Landscape · 16:9": "16:9",
+    "3:4": "3:4",
+    "4:3": "4:3",
+    "9:16": "9:16",
+    "2:3": "2:3",
 }
 # Long-edge bands for a resolution tier. 1K 16:9 is 1376 and must not pass as 2K.
 _TIER_LONG_EDGE = {
@@ -71,11 +75,17 @@ def expected_pixels(output_format: EngineOutputFormat) -> tuple[int, int]:
     """
 
     long_edge = _LONG_EDGE[output_format.resolution]
-    if output_format.image_proportions == "Square · 1:1":
-        return long_edge, long_edge
-    if output_format.image_proportions == "Portrait · 4:5":
-        return round(long_edge * 4 / 5), long_edge
-    return long_edge, round(long_edge * 9 / 16)
+    token = aspect_token(output_format.image_proportions)
+    if token is None:
+        raise ValueError(
+            f"no pixel policy for image_proportions {output_format.image_proportions!r}"
+        )
+    ratio = _ratio_value(token)
+    if ratio is None:
+        raise ValueError(f"invalid aspect token {token!r}")
+    if ratio >= 1:
+        return long_edge, max(1, round(long_edge / ratio))
+    return max(1, round(long_edge * ratio)), long_edge
 
 
 def aspect_matches(aspect_ratio: str, width: int, height: int) -> bool:

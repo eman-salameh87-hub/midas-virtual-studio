@@ -32,6 +32,7 @@ from app.runtime.model_policy import (
     stylist_model,
     validate_stage_model,
 )
+from app.runtime.jobs import create_job_from_intake
 from app.runtime.state import JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
 
@@ -131,9 +132,7 @@ def _client(
 
 
 def _create_job(client: TestClient) -> str:
-    res = client.post("/api/v1/jobs", json={"contract": _contract()})
-    assert res.status_code == 200, res.text
-    return res.json()["job_id"]
+    return create_job_from_intake(JOB_STORE, _contract()).job_id
 
 
 def _seed(client: TestClient, *, through: str) -> str:
@@ -147,6 +146,8 @@ def _seed(client: TestClient, *, through: str) -> str:
         ("critique", f"/api/v1/jobs/{job_id}/critique"),
     )
     for name, path in steps:
+        if name == "generate":
+            assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
         assert client.post(path, json={}).status_code == 200
         if name == through:
             break
@@ -266,6 +267,7 @@ def test_explicit_model_submission_for_all_stages() -> None:
     assert res.json()["engine"]["compile"]["model_id"] == "google/gemini-3.1-flash-image"
 
     # 5. Generate explicit
+    assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
     res = client.post(f"/api/v1/jobs/{job_id}/generate", json={"model_id": "google/gemini-3.1-flash-image"})
     assert res.status_code == 200, res.text
     assert res.json()["generation"]["operation"]["model_id"] == "google/gemini-3.1-flash-image"
@@ -340,6 +342,7 @@ def test_generate_requires_matching_compiled_image_model(monkeypatch) -> None:
     assert res.json()["error"]["code"] == "INVALID_REQUEST"
 
     # Generate with matching compiled model -> succeeds
+    assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
     res = client.post(f"/api/v1/jobs/{job_id}/generate", json={"model_id": "google/gemini-3.1-flash-image"})
     assert res.status_code == 200
 

@@ -8,6 +8,7 @@ import {
   type MidasSelection,
 } from "../../lib/midasSelection";
 import type { ReferencesDraft, SingleItemRole } from "../../types/draft";
+import { StudioSelect } from "../ui/StudioSelect";
 
 const pageSize = 24;
 
@@ -250,16 +251,15 @@ export function MidasSelectionList({
                   </a>
                 ) : null}
               </span>
-              <label>
-                <span className="sr-only">Role for {name}</span>
-                <select
-                  value={midasRole(reference)}
-                  onChange={(event) => setRole(key, event.target.value as SingleItemRole)}
-                >
-                  <option value="hero">Hero</option>
-                  <option value="secondary">Secondary</option>
-                </select>
-              </label>
+              <StudioSelect
+                aria-label={`Role for ${name}`}
+                value={midasRole(reference)}
+                options={[
+                  { value: "hero", label: "Hero" },
+                  { value: "secondary", label: "Secondary" },
+                ]}
+                onChange={(role) => setRole(key, role as SingleItemRole)}
+              />
               <button type="button" aria-label={`Remove ${name}`} onClick={() => remove(reference.id)}>
                 ×
               </button>

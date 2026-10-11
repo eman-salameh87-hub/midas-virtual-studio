@@ -15,6 +15,8 @@ Rules and boundaries:
 - Product identity is locked: never alter the product pieces, shape, colour, pattern, or details.
 - Exact requested count is locked: all product pieces must remain fully visible and countable in the camera and presentation.
 - Brain invariants and policy mode are authoritative and must be preserved.
+- requested_outcomes on the job contract is the selected output type. Do not replace it with a different scene type.
+- If requested_outcomes includes "White BK": setting must be a pure white (#FFFFFF) background; product alone; supporting_props must be []; midas_complements must be []; no room, no lifestyle scene, no decorative props, no floor or wall scene, no added text or logos. Preserve product identity, geometry, materials, color, and construction.
 - Only supplied verified Midas references may be labelled Midas in midas_complements. If no verified Midas catalogue companions are supplied, midas_complements MUST be an empty array [].
 - Never invent SKU, catalogue URL, image hash, or source references.
 - Generic supporting props (supporting_props) are non-brand contextual items (e.g. books, mug, plants, rug). They MUST have is_midas_product: false.

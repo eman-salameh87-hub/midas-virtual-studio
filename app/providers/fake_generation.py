@@ -10,7 +10,12 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
-from app.contracts.generation import GenerationOutputRef, GenerationReceipt, ProviderCapability
+from app.contracts.generation import (
+    GenerationOutputRef,
+    GenerationReceipt,
+    ProviderCapability,
+    ProviderCostEvidence,
+)
 from app.providers.generation import GenerationProviderRequest, GenerationProviderResult
 from app.runtime.pixels import expected_pixels, solid_png
 
@@ -35,10 +40,15 @@ class FakeGenerationProvider:
         *,
         mode: str | None = None,
         extra_capabilities: frozenset[ProviderCapability] | set[ProviderCapability] | None = None,
+        provider_cost: ProviderCostEvidence | None = None,
+        provider_costs: list[ProviderCostEvidence] | None = None,
     ) -> None:
         self.mode = mode
         self.extra_capabilities = frozenset(extra_capabilities or ())
         self.requests: list[GenerationProviderRequest] = []
+        self._provider_costs = list(provider_costs or [])
+        if provider_cost is not None:
+            self._provider_costs.insert(0, provider_cost)
 
     def capabilities(self) -> frozenset[ProviderCapability]:
         if self.mode == "missing_capability":
@@ -94,6 +104,7 @@ class FakeGenerationProvider:
                 ),
                 capability_checks=list(self.capabilities()),
                 hold_reasons=[],
+                provider_cost=self._provider_costs.pop(0) if self._provider_costs else None,
             ),
             output_bytes=output_bytes,
         )

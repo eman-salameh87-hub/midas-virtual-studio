@@ -19,6 +19,24 @@ ReviewStatus = Literal[
 ]
 
 
+class PreGenerationApproval(BaseModel):
+    """Owner authorization to spend one render. This is not a release approval.
+
+    The job contract has no expiry field. expires_at stays null unless the
+    approval itself was given an explicit timestamp.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    owner_id: str = Field(min_length=1)
+    contract_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    request_hash: str = Field(min_length=64, max_length=64)
+    render_count: int = Field(ge=1)
+    approved_at: str = Field(min_length=1)
+    expires_at: str | None = None
+
+
 class OwnerApproval(BaseModel):
     """Explicit owner approval. This object is not inferred from critique."""
 

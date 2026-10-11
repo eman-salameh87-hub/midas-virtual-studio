@@ -92,6 +92,11 @@ class FilesystemArtifactStore:
             "complete": record.complete,
             "releasable": record.releasable,
             "approval": record.approval.model_dump(mode="json") if record.approval else None,
+            "pre_generation_approval": (
+                record.pre_generation_approval.model_dump(mode="json")
+                if record.pre_generation_approval
+                else None
+            ),
             "release": record.release.model_dump(mode="json") if record.release else None,
             "reference_measurements": [
                 item.model_dump(mode="json") for item in record.reference_measurements
@@ -269,6 +274,9 @@ class FilesystemArtifactStore:
                 continue
             name = path.name
             if not _JOB_ID_RE.fullmatch(name) or ".." in name:
+                continue
+            # Client-brief dirs share this root and only have client_brief.json.
+            if not (path / "job.json").is_file():
                 continue
             found.append(name)
         return found

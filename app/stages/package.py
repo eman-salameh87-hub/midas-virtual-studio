@@ -11,10 +11,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.contracts.generation import ProviderCostEvidence
 from app.contracts.review import ReviewStatus
 from app.runtime.state import JobRecord, StoredCritique, StoredGeneration
 
-CostStatus = Literal["not_recorded"]
+CostStatus = Literal["not_recorded", "known", "unknown"]
 
 
 class GenerationLineageEntry(BaseModel):
@@ -98,7 +99,7 @@ class DeliveryManifest(BaseModel):
     approval: dict[str, object] | None = None
     release: dict[str, object] | None = None
     unknowns: list[dict[str, str]]
-    cost: None = None
+    cost: ProviderCostEvidence | None = None
     cost_status: CostStatus = "not_recorded"
     output_valid: bool = False
     consistency_notes: list[str] = Field(default_factory=list)
@@ -114,6 +115,24 @@ def package_is_complete(record: JobRecord) -> bool:
     """True only after an explicit owner approval record exists."""
 
     return bool(record.complete and record.approval is not None)
+
+
+def _current_provider_cost(record: JobRecord) -> ProviderCostEvidence | None:
+    generation = record.generation
+    if generation is None or generation.receipt is None:
+        return None
+    return generation.receipt.provider_cost
+
+
+def _manifest_cost(record: JobRecord) -> ProviderCostEvidence | None:
+    return _current_provider_cost(record)
+
+
+def _manifest_cost_status(record: JobRecord) -> CostStatus:
+    cost = _current_provider_cost(record)
+    if cost is None:
+        return "not_recorded"
+    return cost.status
 
 
 def generation_lineage(record: JobRecord) -> list[GenerationLineageEntry]:
@@ -283,8 +302,8 @@ def build_delivery_manifest(record: JobRecord) -> DeliveryManifest:
         unknowns=[
             {"subject": item.subject, "detail": item.detail} for item in record.contract.unknowns
         ],
-        cost=None,
-        cost_status="not_recorded",
+        cost=_manifest_cost(record),
+        cost_status=_manifest_cost_status(record),
         output_valid=output_valid,
         consistency_notes=notes,
     )

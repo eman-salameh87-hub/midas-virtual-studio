@@ -132,6 +132,10 @@ def test_live_http_job_critique_openrouter() -> None:
         if compile_artifact["status"] != "ready":
             last_error = "compile not ready"
             continue
+        approved = client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={})
+        if approved.status_code != 200:
+            last_error = "pre-generation approval: " + approved.text
+            continue
         generated = client.post(f"/api/v1/jobs/{job_id}/generate", json={})
         if generated.status_code != 200:
             last_error = "generate: " + generated.text

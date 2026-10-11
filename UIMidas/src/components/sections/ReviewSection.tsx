@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import type { MockSubmitResponse } from "../../adapters/mockSubmitJob";
+import type { JobSubmitResponse } from "../../contract/submitPreparedJob";
 import type { ProposedJobContract } from "../../contract/buildJobContract";
+import { persistAndPrepareJob, type JobPlanStatus, type MappingIssue, type PreparedExecution } from "../../adapters/prepareJobFromBrief";
+import { isMockSubmitResponse } from "../../contract/submitPreparedJob";
+import { shouldUseMockSubmit } from "../../adapters/persistClientBrief";
+import { resolveJobSubmitAdapter } from "../../adapters/resolveSubmitAdapter";
 import { sameSubmitKey, submitPreparedJob } from "../../contract/submitPreparedJob";
 import { sectionLabels } from "../../flow";
+import { saveJobSession, type JobSession } from "../../lib/jobSession";
 import { reviewActions } from "../../lib/reviewModel";
 import { normalizeDraft } from "../../normalization/normalizeDraft";
 import { useActiveItemId, useClientJobDraft, useResetDraft, useBatchItems } from "../../state/DraftProvider";
 import type { SectionId } from "../../types/draft";
+import { jobPreparationIssues } from "../../validation/jobPreparation";
 import { validateDraft } from "../../validation/validateDraft";
 import { SectionIntro } from "../ui/chrome";
 import { ReviewSummary } from "./ReviewSummary";
@@ -14,18 +20,30 @@ import { ReviewSummary } from "./ReviewSummary";
 type ReviewOutcome =
   | { type: "idle" }
   | { type: "invalid" }
+  | { type: "blocked" }
   | { type: "submitting" }
-  | { type: "success"; response: MockSubmitResponse; contract: ProposedJobContract; stamp: string; briefJson: string }
+  | {
+      type: "success";
+      response: JobSubmitResponse;
+      contract: ProposedJobContract;
+      stamp: string;
+      briefJson: string;
+      mappingIssues: MappingIssue[];
+      job: JobPlanStatus | null;
+      executions: PreparedExecution[];
+    }
   | { type: "failed"; message: string; contract: ProposedJobContract };
 
 export function ReviewSection({
   onBack,
   onNavigate,
   onStartOver,
+  onJobReady,
 }: {
   onBack: () => void;
   onNavigate: (section: SectionId) => void;
   onStartOver: () => void;
+  onJobReady?: (session: JobSession) => void;
 }) {
   const draft = useClientJobDraft();
   const activeItemId = useActiveItemId();
@@ -50,11 +68,12 @@ export function ReviewSection({
   }
 
   const successIsCurrent = outcome.type === "success" && outcome.stamp === briefJson;
-  const errors = validation.issues.filter((issue) => issue.severity === "error");
+  const preparationIssues = shouldUseMockSubmit() ? [] : jobPreparationIssues(draft, activeItemId);
+  const errors = [...validation.issues.filter((issue) => issue.severity === "error"), ...preparationIssues];
   const warnings = validation.issues.filter((issue) => issue.severity === "warning");
 
   useEffect(() => {
-    if (outcome.type === "invalid") issuesRef.current?.focus();
+    if (outcome.type === "invalid" || outcome.type === "blocked") issuesRef.current?.focus();
     if (outcome.type === "success") successRef.current?.focus();
   }, [outcome]);
 
@@ -71,25 +90,74 @@ export function ReviewSection({
       issuesRef.current?.scrollIntoView({ block: "start" });
       return;
     }
+    if (!shouldUseMockSubmit() && jobPreparationIssues(draft, activeItemId).length > 0) {
+      setOutcome({ type: "blocked" });
+      issuesRef.current?.scrollIntoView({ block: "start" });
+      return;
+    }
 
     const key = sameSubmitKey(keyRef.current);
     keyRef.current = key;
     submittingRef.current = true;
     setOutcome({ type: "submitting" });
-    const result = await submitPreparedJob(draft, key, activeItemId);
+    const result = shouldUseMockSubmit()
+      ? await submitPreparedJob(draft, key, activeItemId, resolveJobSubmitAdapter())
+      : await submitPreparedJob(draft, key, activeItemId, async (contract) => {
+          const prepared = await persistAndPrepareJob(
+            contract,
+            draft,
+            activeItemId,
+          );
+          return {
+            ...prepared.persist,
+            mappingIssues: prepared.mappingIssues,
+            job: prepared.job,
+            executions: prepared.executions,
+          };
+        });
     submittingRef.current = false;
 
     if (result.ok) {
+      const extras = result.response as JobSubmitResponse & {
+        mappingIssues?: MappingIssue[];
+        job?: JobPlanStatus | null;
+        executions?: PreparedExecution[];
+        briefId?: string;
+        ownerId?: string;
+        contractId?: string;
+        revision?: number;
+      };
+      const mappingIssues = extras.mappingIssues ?? [];
+      const job = extras.job ?? null;
+      const executions = extras.executions ?? [];
+      if (!isMockSubmitResponse(result.response) && extras.briefId && extras.ownerId && extras.contractId && extras.revision) {
+        const session: JobSession = {
+          briefId: extras.briefId,
+          ownerId: extras.ownerId,
+          contractId: extras.contractId,
+          revision: extras.revision,
+          jobId: executions[0]?.jobId ?? job?.jobId ?? null,
+          mappingIssues,
+          executions,
+        };
+        if (session.jobId) {
+          saveJobSession(session);
+          onJobReady?.(session);
+        }
+      }
       setOutcome({
         type: "success",
         response: result.response,
         contract: result.contract,
         stamp: briefJson,
         briefJson,
+        mappingIssues,
+        job,
+        executions,
       });
       return;
     }
-    if (result.reason === "mock-failed") {
+    if (result.reason === "mock-failed" || result.reason === "persist-failed") {
       setOutcome({ type: "failed", message: result.message, contract: result.contract });
       return;
     }
@@ -142,12 +210,60 @@ export function ReviewSection({
         <div className="job-created">
           <h2 id="job-created" tabIndex={-1} ref={successRef}>
             <span aria-hidden="true">✓ </span>
-            {reviewActions.created}
+            {outcome.response.mock ? reviewActions.created : outcome.job ? "Job created" : "Brief saved"}
           </h2>
-          <p>
-            Job ID
-            <strong>{outcome.response.jobId}</strong>
-          </p>
+          {outcome.response.mock ? (
+            <p>
+              Job ID
+              <strong>{outcome.response.jobId}</strong>
+            </p>
+          ) : (
+            <>
+              <p>
+                Brief ID
+                <strong>{outcome.response.briefId}</strong>
+              </p>
+              {outcome.executions.length > 0 || outcome.job ? (
+                <>
+                  {(outcome.executions.length > 0 ? outcome.executions : outcome.job ? [{ jobId: outcome.job.jobId, requestedView: "", imageProportions: "", resolution: "", requestedOutcomes: [] }] : []).map((execution) => (
+                    <p key={execution.jobId}>
+                      {execution.requestedView || "Job ID"}
+                      <strong>{execution.jobId}</strong>
+                    </p>
+                  ))}
+                  {outcome.job ? (
+                    <p>
+                      Plan
+                      <strong>
+                        {outcome.job.stage} · {outcome.job.state}
+                        {outcome.job.compileAvailable ? " · compile ready" : ""}
+                      </strong>
+                    </p>
+                  ) : null}
+                  <p className="note">
+                    Planning ran on the backend. Generation is not approved and was not started.
+                  </p>
+                </>
+              ) : (
+                <p className="note">
+                  The brief is saved. A Phase-0 job was not created. Generation was not started.
+                  Batch, Projects, saved projects, and catalogue execution are not supported.
+                </p>
+              )}
+              {outcome.mappingIssues.length > 0 ? (
+                <div className="status status--warn">
+                  <p>The saved brief could not be mapped to Phase-0. These decisions are still unresolved:</p>
+                  <ul>
+                    {outcome.mappingIssues.map((issue) => (
+                      <li key={`${issue.code}-${issue.field}`}>
+                        <strong>{issue.code}</strong> {issue.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </>
+          )}
           <p>
             Contract version
             <strong>{outcome.response.contractVersion}</strong>
@@ -162,6 +278,7 @@ export function ReviewSection({
       {outcome.type === "failed" ? (
         <div className="status status--warn" aria-live="polite">
           <p>{reviewActions.unable}</p>
+          <p>{outcome.message}</p>
           <button type="button" className="btn btn--secondary" onClick={submit}>
             {reviewActions.retry}
           </button>
@@ -174,7 +291,7 @@ export function ReviewSection({
           id="review-issues"
           tabIndex={-1}
           ref={issuesRef}
-          role={outcome.type === "invalid" ? "alert" : undefined}
+          role={outcome.type === "invalid" || outcome.type === "blocked" ? "alert" : undefined}
           aria-live="polite"
         >
           {errors.map((entry) => (
@@ -205,6 +322,12 @@ export function ReviewSection({
       ) : null}
 
       <ReviewSummary draft={draft} activeItemId={activeItemId} onEdit={edit} />
+
+      {shouldUseMockSubmit() ? (
+        <p className="note">Mock submit stores the brief only. It does not create a job.</p>
+      ) : (
+        <p className="note">Submitting saves the brief, then creates a job from it. Generation stays behind an explicit approval.</p>
+      )}
 
       <div className="step-footer">
         <button type="button" className="btn btn--ghost" onClick={onBack}>
@@ -241,7 +364,11 @@ export function ReviewSection({
         <summary>Development preview</summary>
         <div className="debug-panel__body">
           <div className="debug-panel__head">
-            <p>Development only. The summary above is the brief. This is the normalized request, the proposed contract, and the mock response when one exists.</p>
+            <p>
+              Development only. The summary above is the brief. This is the normalized request, the proposed
+              contract, and the persist or mock response when one exists. Equivalence with the published Client
+              Studio page is unverified.
+            </p>
             <button type="button" className="btn btn--secondary" onClick={copyPreview}>
               {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy preview"}
             </button>

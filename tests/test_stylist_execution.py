@@ -243,6 +243,8 @@ def test_instruction_requires_exact_stylistplan_json() -> None:
     assert '"rejected_alternatives": [' in text
     assert '"is_midas_product": false' in text
     assert "extra=\"forbid\"" in text or "extra=forbid" in text
+    assert "White BK" in text
+    assert "pure white (#FFFFFF)" in text
 
 
 def test_mock_openrouter_json_validates_as_stylistplan() -> None:

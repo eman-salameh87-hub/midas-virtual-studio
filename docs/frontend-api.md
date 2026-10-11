@@ -1,13 +1,15 @@
 # MIDAS backend API handoff
 
 This is the current FastAPI contract for the frontend. It documents only
-behavior that exists today. Release, login, and durable Vault storage are
-not implemented. Critique · assess and bounded Critique · repair are
-available. Local/dev job recovery after process restart is described in
-section 12.
+behavior that exists today. There is no login layer and no durable Vault.
+Job state in a running process is in memory. Files under `outputs/<job_id>/`
+are the local recovery seam.
 
-Interactive docs: `/docs`  
+Interactive docs: `/docs`
 Machine-readable spec: `/openapi.json`
+
+Swagger lists every POST operation before every GET operation. The routes
+themselves are unchanged.
 
 ## 1. Base URL
 
@@ -17,7 +19,22 @@ Local development:
 http://127.0.0.1:8000
 ```
 
-Job routes are under `/api/v1`. Health is `GET /health`.
+Copy `.env.example` to `.env` in the repo root. python-dotenv loads that file
+(process environment wins). UIMidas Manual persist uses operator-provided
+`MIDAS_DEV_OWNER_ID` and `MIDAS_DEV_CONTRACT_ID` from `.env` when the POST
+body omits Architecture A identity. That is not production identity.
+`.env.example` is not loaded.
+
+Start the API with `uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
+and UIMidas with `npm run dev` in `UIMidas/` (`http://127.0.0.1:5173`). Vite
+proxies `/api` to this base URL.
+
+Job routes are under `/api/v1`. Health is `GET /health`. Client briefs are
+`POST /api/v1/client-briefs` and `GET /api/v1/client-briefs/{brief_id}`.
+`POST /api/v1/client-briefs/{brief_id}/jobs` maps a saved Manual one-by-one
+brief to Phase-0, creates a job, and schedules Eye → Brain → Stylist → Compile.
+It does not generate images. Unmapped Phase-0 fields return
+`BRIEF_MAPPING_UNRESOLVED` and leave the brief unchanged.
 
 ## 2. Authentication assumptions
 
@@ -67,40 +84,37 @@ Eye is not executed on create.
 - `stage` (`intake` after create)
 
 `GET /api/v1/jobs/{job_id}` returns the public job view: frozen contract,
-current `stage` / `state`, hold/error when present, and nested Eye / Brain /
-Stylist / Engine / Generation results when those stages have completed.
+current `stage` / `state`, hold/error when present, nested stage results when
+those stages have completed, `review_status`, `complete`, `releasable`, and
+`approved`. `approved` is true only after final owner approval. Pre-generation
+approval does not set it.
 
 `GET /api/v1/jobs/{job_id}/status` is the short poll object: stage, state,
 availability flags, hold, and error. It does not execute stages.
 
-## 5. Stage endpoints
+## 5. POST endpoints
 
-Each stage is an explicit POST. The matching GET returns persisted JSON and
-does not re-run the provider.
+Each execute route is explicit. A GET never re-runs a provider.
 
-| Stage | Execute | Read |
-| --- | --- | --- |
-| Eye | `POST /api/v1/jobs/{job_id}/eye` | `GET /api/v1/jobs/{job_id}/eye` |
-| Brain | `POST /api/v1/jobs/{job_id}/brain` | `GET /api/v1/jobs/{job_id}/brain` |
-| Stylist | `POST /api/v1/jobs/{job_id}/stylist` | `GET /api/v1/jobs/{job_id}/stylist` |
-| Compile | `POST /api/v1/jobs/{job_id}/compile` | `GET /api/v1/jobs/{job_id}/compile` |
-| Critique | `POST /api/v1/jobs/{job_id}/critique` | `GET /api/v1/jobs/{job_id}/critique` |
-| Repair | `POST /api/v1/jobs/{job_id}/repair` | `GET /api/v1/jobs/{job_id}/repair` |
+| Action | Route |
+| --- | --- |
+| Create job | `POST /api/v1/jobs` |
+| Eye | `POST /api/v1/jobs/{job_id}/eye` |
+| Brain | `POST /api/v1/jobs/{job_id}/brain` |
+| Stylist | `POST /api/v1/jobs/{job_id}/stylist` |
+| Compile | `POST /api/v1/jobs/{job_id}/compile` |
+| Pre-generation approval | `POST /api/v1/jobs/{job_id}/generate/approve` |
+| Generate | `POST /api/v1/jobs/{job_id}/generate` |
+| Critique | `POST /api/v1/jobs/{job_id}/critique` |
+| Repair | `POST /api/v1/jobs/{job_id}/repair` |
+| Final owner approval | `POST /api/v1/jobs/{job_id}/review/approve` |
+| Release | `POST /api/v1/jobs/{job_id}/review/release` |
 
-Execute bodies are empty objects:
-
-```json
-{}
-```
-
-The caller does not select a model. The backend model policy chooses the
-stage model and records the effective `model_id` on the result/artifact.
-
-Planning stages (Eye, Brain, Stylist, Critique) default to
-`openai/gpt-4.1`. Compile persists the image model
-`google/gemini-3.1-flash-image` onto `EngineCompile`. Generate and Repair
-use that compiled image model. Extra `model_id` on a request is rejected
-with `422`.
+Stage bodies may be `{}`. `model_id` is optional. Planning stages (Eye, Brain,
+Stylist, Critique) default to `openai/gpt-4.1`. Compile, Generate, and Repair
+default to `google/gemini-3.1-flash-image`. A model outside the allowed set
+returns `422`. Generate and Repair must match the image model already stored
+on the compile artifact. A different allowed image model returns `422`.
 
 If a prior stage has not run, the API returns `409` with a stage-specific
 code (`EYE_NOT_RUN`, `BRAIN_NOT_RUN`, `STYLIST_NOT_RUN`, `ENGINE_NOT_RUN`,
@@ -111,30 +125,109 @@ If a prior stage is on HOLD, execute returns `409` (`BRAIN_NOT_READY`,
 
 Provider failures return `502 PROVIDER_FAILURE`.
 
-## 6. Generation endpoint
+## 6. GET endpoints
+
+| Read | Route |
+| --- | --- |
+| Job | `GET /api/v1/jobs/{job_id}` |
+| Eye | `GET /api/v1/jobs/{job_id}/eye` |
+| Brain | `GET /api/v1/jobs/{job_id}/brain` |
+| Stylist | `GET /api/v1/jobs/{job_id}/stylist` |
+| Compile | `GET /api/v1/jobs/{job_id}/compile` |
+| Generation | `GET /api/v1/jobs/{job_id}/generate` |
+| Critique | `GET /api/v1/jobs/{job_id}/critique` |
+| Repair | `GET /api/v1/jobs/{job_id}/repair` |
+| Image bytes | `GET /api/v1/jobs/{job_id}/generate/image` |
+| Status | `GET /api/v1/jobs/{job_id}/status` |
+
+These reads return persisted JSON, or image bytes for the image route. They
+do not dispatch providers.
+
+## 7. Pre-generation approval
+
+`POST /api/v1/jobs/{job_id}/generate/approve`
+
+Authorizes one render. It does not approve the reviewed candidate and does
+not release.
+
+The record is bound to:
+
+- `owner_id`
+- `contract_id`
+- contract revision
+- `request_hash`
+- `render_count` (`1` for the initial generate call)
+- `approved_at`
+- `expires_at` when the caller sends one
+
+The job contract has no expiry field. Omit `expires_at`, or send `null`,
+when the approval should not expire. Body `{}` is valid.
+
+```json
+{ "expires_at": null }
+```
+
+Calling approve again for the same owner, revision, request hash, and render
+count does not create a second record.
+
+`POST /generate` returns `409 PRE_GENERATION_APPROVAL_REQUIRED` and does not
+call OpenRouter when:
+
+- no pre-generation approval exists
+- the approval owner does not match the job owner
+- the request hash does not match
+- the contract revision does not match
+- the render count does not match
+- `expires_at` is in the past
+
+A changed contract revision invalidates the previous approval. Compile must
+already be ready. A held compile returns `409 GENERATION_NOT_READY` and does
+not record approval.
+
+## 8. Generation
 
 `POST /api/v1/jobs/{job_id}/generate`
 
-Body is an empty object: `{}`. The image `model_id` is already recorded on
-the compile artifact. This call claims and dispatches generation. It does not
-repair or release. Critique is a separate POST.
+Requires a matching pre-generation approval. The call then claims one
+operation and sends it to the OpenRouter Image API (`POST /api/v1/images`).
+Compiled resolution and aspect ratio are sent as provider fields. Reference
+images are sent as input references when the model advertises them.
+
+The backend then measures the returned image. `format_check` passes only when
+the measured long edge is in the requested resolution tier, the aspect ratio
+is within tolerance, and the MIME type agrees. The bytes are not resized or
+upscaled. A mismatch holds the job and keeps the measured image.
 
 `GET /api/v1/jobs/{job_id}/generate` returns the persisted operation and
 receipt. It never dispatches again.
 
 Generation JSON includes:
 
-- `job_id`, `revision`, `stage`, `state`
-- `generation.operation` (includes `model_id`, `exact_prompt`, reference ids, timestamps via `claimed_at`)
-- `generation.receipt` (status, provider name, receipt id, hold reasons, output identity, timestamps)
+- `generation.operation` (`model_id`, exact prompt, reference ids, output format, `claimed_at`)
+- `generation.receipt` (status, provider name, receipt id, format check, measured pixels, provider request, provider usage, provider cost)
 - `generation.status`
 - `generation.output_available`
 - `generation.image_url` — `/api/v1/jobs/{job_id}/generate/image` when bytes exist, otherwise `null`
 
-Repeating POST after a claimed, completed, held, or uncertain receipt does
-not dispatch again.
+`provider_cost` is present on a completed OpenRouter receipt:
 
-## 7. Generated-image endpoint
+- `amount` is the provider-reported number when `usage.cost` was returned
+- `currency` is set only when the provider response included a currency; otherwise `null`
+- `status` is `known` or `unknown`
+
+Unknown cost uses `amount: null`. It is never stored as `0`. This is receipt
+evidence, not a price quote or a billing system. The delivery manifest copies
+that object when the current receipt has one. Jobs with no provider cost keep
+manifest `cost: null` and `cost_status: "not_recorded"`.
+
+Repeating POST after a claimed, completed, held, or uncertain receipt for the
+same operation does not dispatch again. A `failed` receipt with
+`retry_if_never_started` can be dispatched again. That classification is used
+when OpenRouter returned a finished rejection, such as HTTP 4xx, or a finished
+body with no image. A timeout or dropped connection stays `uncertain` /
+`reconcile_only` and blocks another paid call.
+
+## 9. Generated-image endpoint
 
 `GET /api/v1/jobs/{job_id}/generate/image`
 
@@ -143,53 +236,104 @@ or `image/webp`.
 
 This does not dispatch generation.
 
-If generation has not run: `409 GENERATION_NOT_RUN`.  
-If generation ran but there is no image: `409 GENERATION_IMAGE_UNAVAILABLE`.  
-Unknown job: `404 JOB_NOT_FOUND`.  
+If generation has not run: `409 GENERATION_NOT_RUN`.
+If generation ran but there is no image, or the checksum does not match:
+`409 GENERATION_IMAGE_UNAVAILABLE`.
+Unknown job: `404 JOB_NOT_FOUND`.
 Wrong owner: `403 JOB_OWNER_MISMATCH`.
 
-## 8. Critique endpoint
+## 10. Critique
 
 `POST /api/v1/jobs/{job_id}/critique`
 
-Body is an empty object: `{}`. The backend selects the Critique model.
-Inspects the original reference and generated image. Does not repair.
+Inspects the original reference and the generated image. It does not repair
+and it does not approve or release.
 
-`GET /api/v1/jobs/{job_id}/critique` returns the persisted assessment. It never
-reruns Critique.
+The assessment includes:
 
-If generation is not completed or the image is missing: `409 GENERATION_NOT_READY`.
+- product fidelity findings: inventory, identity, geometry, details, appearance, placement, lighting, composition
+- styling compliance
+- Brain/Stylist plan compliance
+- requested view
+- scene compliance
+- attribute drift
+- unknowns, kept separate from findings
 
-## 8b. Repair endpoint
+A finding `result` of `pass` cannot use severity `critical`. Severity
+`critical` is only for `fail` or `uncertain`.
+
+`overall_result` `pass` moves the job to review. It does not set `complete`
+or `releasable`. Release still needs final owner approval.
+
+`GET /api/v1/jobs/{job_id}/critique` returns the persisted assessment and
+does not rerun Critique.
+
+If generation is not completed or the image is missing:
+`409 GENERATION_NOT_READY`.
+
+## 11. Repair
 
 `POST /api/v1/jobs/{job_id}/repair`
 
-Body is an empty object: `{}`. The repair planner is deterministic and does
-not call an LLM. Image generation uses `EngineCompile.model_id` already
-recorded on the job by compile. Do not send `model_id` on this request.
+Runs only when the latest Critique has `overall_result` `repair_required`.
+The planner does not call an LLM. Image generation, when the selected action
+is supported, uses the compiled image model.
 
-Requires Critique `overall_result=repair_required`. Maximum two image repairs.
-Repair #3 is impossible. The original product reference stays attached on
-every attempt. A completed repair writes a new generation version and must be
-re-reviewed with `POST /critique`. `GET /repair` never dispatches.
+The limit is two image repairs. A third attempt holds and does not call the
+provider. Repair does not rerun Eye, Brain, Stylist, or Compile. The original
+product reference stays on the operation. The plan names protected scene
+attributes and the product-authority reference.
 
-If Critique has not run: `409 CRITIQUE_NOT_RUN`.  
-If Critique passed: `409 REPAIR_NOT_REQUIRED`.  
-If the two-repair budget is exhausted: the job HOLDs and no provider call is
-made.
+The current OpenRouter generation adapter does not advertise `local_edit`.
+A non-geometry repair selects that targeted edit, then the job holds, and
+scene preservation is not claimed. A geometry or identity failure can select
+`fresh_render`. That is a new image call. It does not claim the previous
+scene was preserved. An unsupported or exhausted repair holds.
 
-## 9. Status values
+A completed repair writes another generation version. It must be critiqued
+again before final approval. `GET /repair` never dispatches.
 
-Job `stage`: `intake` | `eye` | `brain` | `stylist` | `compile` | `generate` | `critique`
+If Critique has not run: `409 CRITIQUE_NOT_RUN`.
+If Critique passed: `409 REPAIR_NOT_REQUIRED`.
 
-Job `state`: `accepted` | `ready` | `hold` | `failed`
+No live repair-required job is part of the end-to-end proof below.
+
+## 12. Final owner approval and release
+
+These routes are separate from pre-generation approval.
+
+`POST /api/v1/jobs/{job_id}/review/approve`
+
+Records owner approval of the current critiqued candidate. Critique pass
+alone cannot do this. The record is bound to the owner, contract revision,
+request hash, and generation output id. On success, `complete` and
+`releasable` become true and `review_status` is `owner_approved`.
+
+If Critique has not passed, format check has not passed, or the image is
+missing: `409 REVIEW_NOT_READY`.
+
+`POST /api/v1/jobs/{job_id}/review/release`
+
+Releases an already approved candidate. It does not create approval.
+Pre-generation approval is not enough. On success, `review_status` is
+`released`.
+
+If final approval is missing: `409 RELEASE_NOT_READY`.
+
+## 13. Status values
+
+Job `stage`: `intake` | `eye` | `brain` | `stylist` | `compile` | `generate` | `critique` | `repair`
+
+Job `state`: `accepted` | `ready` | `hold` | `failed` | `review_pending` | `approved` | `released`
+
+`review_status`: `generation_completed` | `critique_passed` | `review_pending` | `owner_approved` | `released` | `hold`
 
 Generation receipt `status`: `claimed` | `completed` | `failed` | `hold` | `uncertain`
 
 `JobStatusView.ready` is Eye readiness (`readiness.status == "ready"`), not a
 guarantee that later stages succeeded.
 
-## 10. Error format
+## 14. Error format
 
 All errors use:
 
@@ -207,56 +351,88 @@ Common HTTP statuses:
 
 - `403` owner mismatch
 - `404` job not found
-- `409` wrong revision, missing stage, or HOLD / not ready
-- `422` invalid request
+- `409` wrong revision, missing stage, HOLD / not ready, or missing pre-generation approval
+- `422` invalid request or disallowed model
 - `502` provider failure
 
-## 11. Expected frontend flow
+## 15. Expected frontend flow
 
 ```
-Create Job
-  ↓
 POST /api/v1/jobs
   ↓
-GET /api/v1/jobs/{id}/status
+POST /api/v1/jobs/{id}/eye
+POST /api/v1/jobs/{id}/brain
+POST /api/v1/jobs/{id}/stylist
+POST /api/v1/jobs/{id}/compile
   ↓
-POST /api/v1/jobs/{id}/eye   then GET .../eye
-  ↓
-POST /api/v1/jobs/{id}/brain then GET .../brain
-  ↓
-POST /api/v1/jobs/{id}/stylist then GET .../stylist
-  ↓
-POST /api/v1/jobs/{id}/compile then GET .../compile
-  ↓
+POST /api/v1/jobs/{id}/generate/approve
 POST /api/v1/jobs/{id}/generate
   ↓
-GET /api/v1/jobs/{id}/generate   (poll; do not treat GET as execute)
-  ↓
-GET /api/v1/jobs/{id}/generate/image
+GET  /api/v1/jobs/{id}/generate
+GET  /api/v1/jobs/{id}/generate/image
   ↓
 POST /api/v1/jobs/{id}/critique
   ↓
-GET /api/v1/jobs/{id}/critique
+POST /api/v1/jobs/{id}/repair    only when Critique is repair_required
+POST /api/v1/jobs/{id}/critique  again after a completed repair
+  ↓
+POST /api/v1/jobs/{id}/review/approve
+POST /api/v1/jobs/{id}/review/release
 ```
 
-Do not skip stages. Do not send the contract again after create. Do not
-expect Repair or Release routes; they do not exist.
+GET routes are for polling and display. Do not skip stages. Do not send the
+contract again after create. Do not treat pre-generation approval as release.
 
-## 12. Local/dev job recovery after process restart
+## 16. Local artifacts
 
-This is **not** durable production persistence and is **not** a database.
+Files are under `outputs/<job_id>/` unless `MIDAS_OUTPUTS_DIR` is set.
 
-On FastAPI startup the process reconstructs in-memory `JobRecord`s from the
-configured local artifact directory (`MIDAS_OUTPUTS_DIR`, defaulting to
-`outputs/<job_id>/` in the repo). Completed Eye / Brain / Stylist / Compile /
-Generate / Critique JSON already on disk is loaded into `JobStore`. Stages
-are not rerun and providers are not called.
+- `job.json` — contract, owner, review, pre-generation approval, final approval, release
+- `input/` — reference bytes
+- `eye.json`, `brain.json`, `stylist.json`, `compile.json`
+- `generation.json` and `generations/` — receipt, measured pixels, provider usage and cost when returned
+- `output/` — generated image bytes
+- `critique.json` and `critiques/`
+- `repair.json` and `repairs/` when repair has run
+- `manifest.json` — delivery projection, including persisted cost evidence when the receipt has it
 
-If a completed `generation.json` is present (`status=completed`, operation
-key, provider receipt id, output metadata), `POST /generate` must not
-dispatch another paid call. After restart you can `GET` restored stages and
-continue with `POST /critique` when generation is already complete.
+Reference metadata and checksums are computed from stored bytes. A checksum
+mismatch holds the job. The image GET then returns `409`.
+
+## 17. Recovery
+
+This is not durable production persistence and is not a database.
+
+On FastAPI startup the process reconstructs in-memory jobs from the local
+artifact directory. Saved Eye, Brain, Stylist, Compile, Generate, Critique,
+and Repair JSON is loaded. Pre-generation approval is loaded with `job.json`.
+Stages are not rerun and OpenRouter is not called.
+
+If `generation.json` has a receipt that blocks dispatch, `POST /generate`
+does not make another paid call. After restart you can GET restored stages
+and continue with the next POST that the recovered state allows.
 
 Jobs already in memory are not overwritten. Malformed artifacts are skipped
-with a warning; they do not crash startup. Production Vault/object storage
-is a later replacement of this local/dev seam.
+with a warning. They do not crash startup.
+
+## 18. One live end-to-end case
+
+Job `dd169c6b-fc47-46e3-bd28-20bc002f348b`.
+
+Eye observed one dining table and six dining chairs. The contract category
+is Dining Sets. The path that completed was:
+
+Create → Eye → Brain → Stylist → Compile → pre-generation approval →
+OpenRouter generate → pixel validation → Critique pass → final owner
+approval → release.
+
+The image is a 2048×2048 PNG. The provider request used `resolution` `2K`
+and `aspect_ratio` `1:1` on `google/gemini-3.1-flash-image`. Format check
+passed. Provider-reported cost is `0.102204` with status `known`. Currency
+was not in the provider payload, so it is null. The job is `released`, with
+`complete=true`, `releasable=true`, and final approval present.
+
+The local test suite at the time of this note was `311 passed, 7 skipped`.
+
+This is one live case. It does not prove every product category, a companion
+or SKU workflow, or a live repair-required job.

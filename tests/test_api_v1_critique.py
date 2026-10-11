@@ -16,6 +16,8 @@ from app.providers.fake_eye import FakeEyeProvider
 from app.providers.fake_generation import FakeGenerationProvider
 from app.providers.fake_stylist import FakeStylistProvider
 from app.runtime.artifacts import get_artifact_store
+from app.runtime.jobs import create_job_from_intake
+from app.runtime.orchestrator import join_scheduled_planning
 from app.runtime.state import JOB_STORE
 from tests.png_bytes import PNG_B64, PNG_HASH
 
@@ -95,11 +97,12 @@ def _client(critique: FakeCritiqueProvider | None = None) -> TestClient:
 
 
 def _seed_generated(client: TestClient) -> str:
-    job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, _contract()).job_id
     assert client.post(f"/api/v1/jobs/{job_id}/eye", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/compile", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/generate", json={}).status_code == 200
     return job_id
 
@@ -139,12 +142,23 @@ def test_get_critique_not_run() -> None:
 
 def test_critique_requires_generation() -> None:
     client = _client()
-    job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, _contract()).job_id
     res = client.post(
         f"/api/v1/jobs/{job_id}/critique", json={}
     )
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "EYE_NOT_RUN"
+
+
+def test_critique_after_scheduled_planning_requires_generation() -> None:
+    client = _client()
+    job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
+    assert join_scheduled_planning(job_id)
+    res = client.post(
+        f"/api/v1/jobs/{job_id}/critique", json={}
+    )
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "GENERATION_NOT_RUN"
 
 
 def test_critique_owner_and_revision_mismatch() -> None:
@@ -192,6 +206,7 @@ def test_uncertain_generation_blocks_critique() -> None:
     assert client.post(f"/api/v1/jobs/{job_id}/brain", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/stylist", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/compile", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
     assert client.post(f"/api/v1/jobs/{job_id}/generate", json={}).status_code == 200
     res = client.post(
         f"/api/v1/jobs/{job_id}/critique", json={}

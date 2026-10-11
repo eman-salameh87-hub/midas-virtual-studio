@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "scrape:midas": "node scripts/scrape-midas-products.mjs",
-    "test": "tsx --test src/foundation.test.ts src/references.test.ts src/review.test.tsx src/flow.test.ts src/taxonomy.test.tsx src/scope.test.tsx src/suggestions.test.tsx src/submissionAudit.test.ts src/project.test.tsx src/projectItem.test.tsx src/projectScope.test.tsx src/projectSubmit.test.tsx src/jobEdit.test.tsx src/midasPicker.test.tsx"
+    "test": "tsx --test src/foundation.test.ts src/references.test.ts src/review.test.tsx src/flow.test.ts src/taxonomy.test.tsx src/scope.test.tsx src/suggestions.test.tsx src/studioSelect.test.tsx src/submissionAudit.test.ts src/project.test.tsx src/projectItem.test.tsx src/projectScope.test.tsx src/projectSubmit.test.tsx src/jobEdit.test.tsx src/midasPicker.test.tsx src/persistBrief.test.ts src/jobSession.test.ts src/jobWorkflow.test.ts src/jobWorkspace.test.tsx src/jobPreparation.test.ts src/generationCost.test.ts"
   },
   "dependencies": {
     "react": "^19.1.1",
@@ -23,5 +23,8 @@
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vite": "^7.1.7"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
   }
 }

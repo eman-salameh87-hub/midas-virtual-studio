@@ -112,12 +112,18 @@ def _compiled(store: InMemoryJobStore, *, compile_hold: bool = False):
     execute_job_stylist(
         store, job_id=record.job_id, model_id=CALLER_MODEL, provider=FakeStylistProvider()
     )
-    return execute_job_compile(
+    compiled = execute_job_compile(
         store,
         job_id=record.job_id,
         model_id=CALLER_MODEL,
         compiler=FakeEngineCompiler(violation="missing_critical" if compile_hold else None),
     )
+    if compiled.engine is not None and compiled.engine.result is not None:
+        if compiled.engine.result.status == "ready":
+            from app.runtime.jobs import approve_pre_generation
+
+            return approve_pre_generation(store, job_id=compiled.job_id)
+    return compiled
 
 
 def test_generation_cannot_run_without_eye() -> None:

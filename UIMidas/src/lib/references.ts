@@ -126,6 +126,9 @@ export function replaceLocalFile(
 ): ClientReference {
   const kind = intakeKindFor(reference.type);
   const staged = stageLocalFile(file, kind, primaryProductGroupId, siblings);
+  const kept = localFileFor(staged.id);
+  forgetLocalFile(staged.id);
+  if (kept) rememberLocalFile(reference.id, kept);
   return {
     ...staged,
     id: reference.id,
@@ -137,6 +140,7 @@ export function replaceLocalFile(
 }
 
 export function withoutReference(items: ClientReference[], id: string): ClientReference[] {
+  forgetLocalFile(id);
   return items.filter((item) => item.id !== id);
 }
 
@@ -181,6 +185,20 @@ export function fileTypeLabel(fileName: string, mediaKind: "image" | "file"): st
   return mediaKind === "image" ? "Image" : "File";
 }
 
+const localFilesByReferenceId = new Map<string, File>();
+
+export function rememberLocalFile(referenceId: string, file: File): void {
+  localFilesByReferenceId.set(referenceId, file);
+}
+
+export function localFileFor(referenceId: string): File | undefined {
+  return localFilesByReferenceId.get(referenceId);
+}
+
+export function forgetLocalFile(referenceId: string): void {
+  localFilesByReferenceId.delete(referenceId);
+}
+
 function stageLocalFile(
   file: File,
   kind: LocalIntakeKind,
@@ -202,8 +220,10 @@ function stageLocalFile(
   }
 
   const failed = Boolean(problem) || readFailed;
+  const id = createId();
+  if (!failed) rememberLocalFile(id, file);
   return {
-    id: createId(),
+    id,
     type,
     source: "local_file",
     asset: {
@@ -228,7 +248,11 @@ function intakeProblem(file: File, kind: LocalIntakeKind, existing: ClientRefere
   if (kind === "specification_file") {
     return isSpecificationFile(file) ? null : "Use an image, PDF, or text file.";
   }
-  if (!isImageFile(file)) return kind === "product" ? "Use an image for this product." : "Use an image for this reference.";
+  if (!isPhase0ImageFile(file)) {
+    return kind === "product"
+      ? "Use a JPG, PNG, or WebP image for this product."
+      : "Use a JPG, PNG, or WebP image for this reference.";
+  }
   return null;
 }
 
@@ -247,8 +271,36 @@ function extensionOf(name: string): string {
 }
 
 function isImageFile(file: File): boolean {
+  if (isPhase0ImageFile(file)) return true;
   if (file.type.startsWith("image/")) return true;
-  return ["jpg", "jpeg", "png", "gif", "webp", "avif", "heic", "tif", "tiff"].includes(extensionOf(file.name));
+  return ["gif", "avif", "heic", "tif", "tiff"].includes(extensionOf(file.name));
+}
+
+export function isPhase0ImageFile(file: File): boolean {
+  const mime = file.type.toLowerCase();
+  if (mime === "image/jpeg" || mime === "image/png" || mime === "image/webp") return true;
+  if (mime.startsWith("image/")) return false;
+  return ["jpg", "jpeg", "png", "webp"].includes(extensionOf(file.name));
+}
+
+export function phase0MediaFromBytes(bytes: Uint8Array): "JPG" | "PNG" | "WebP" | "PDF" | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "JPG";
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "PNG";
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "WebP";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return "PDF";
+  return null;
 }
 
 function isSpecificationFile(file: File): boolean {

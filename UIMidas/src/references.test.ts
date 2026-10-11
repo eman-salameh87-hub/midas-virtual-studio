@@ -215,7 +215,7 @@ describe("reference assets", () => {
     assert.equal(empty.localStatus, "error");
     assert.equal(empty.localStatusMessage, "This file is empty.");
     assert.equal(unsupported.localStatus, "error");
-    assert.equal(unsupported.localStatusMessage, "Use an image for this product.");
+    assert.equal(unsupported.localStatusMessage, "Use a JPG, PNG, or WebP image for this product.");
     assert.equal(duplicate.localStatus, "error");
     assert.equal(duplicate.localStatusMessage, "This file is already here.");
 
@@ -230,5 +230,14 @@ describe("reference assets", () => {
     const brief = normalizeDraft(draft, item.id);
     assert.equal(brief.items[0]?.references.length, 0);
     assert.equal(JSON.stringify(brief).includes("blank.jpg"), false);
+  });
+
+  it("rejects GIF and HEIC product uploads that Phase-0 cannot intake", () => {
+    const groupId = "group-1";
+    const gif = stageLocalFiles([file("shot.gif", "image/gif")], "product", groupId, [])[0];
+    const heic = stageLocalFiles([file("shot.heic", "image/heic")], "product", groupId, [])[0];
+    assert.equal(gif.localStatus, "error");
+    assert.equal(heic.localStatus, "error");
+    assert.match(gif.localStatusMessage ?? "", /JPG, PNG, or WebP/);
   });
 });

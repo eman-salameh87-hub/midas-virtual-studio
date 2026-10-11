@@ -213,6 +213,8 @@ describe("client review", () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(reviewActions.created, "Job created");
+    assert.equal(result.response.mock, true);
+    if (!result.response.mock) return;
     assert.match(result.response.jobId, /^dev-job-/);
     assert.equal(result.response.contractVersion, CONTRACT_VERSION);
     assert.equal(result.response.contractVersion, "studio-jobs-v2-draft");

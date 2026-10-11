@@ -24,7 +24,7 @@ from app.providers.fake_generation import FakeGenerationProvider
 from app.providers.fake_repair import FakeRepairPlanner
 from app.providers.fake_stylist import FakeStylistProvider
 from app.runtime.artifacts import get_artifact_store
-from app.runtime.jobs import execute_job_repair
+from app.runtime.jobs import create_job_from_intake, execute_job_repair
 from app.runtime.recovery import recover_jobs_from_artifacts
 from app.runtime.state import JOB_STORE
 from app.stages.repair import (
@@ -122,7 +122,7 @@ def _seed_critiqued(
     *,
     through: str = "critique",
 ) -> str:
-    job_id = client.post("/api/v1/jobs", json={"contract": _contract()}).json()["job_id"]
+    job_id = create_job_from_intake(JOB_STORE, _contract()).job_id
     steps = [
         ("eye", f"/api/v1/jobs/{job_id}/eye", {}),
         ("brain", f"/api/v1/jobs/{job_id}/brain", {}),
@@ -132,6 +132,8 @@ def _seed_critiqued(
         ("critique", f"/api/v1/jobs/{job_id}/critique", {}),
     ]
     for name, path, body in steps:
+        if name == "generate":
+            assert client.post(f"/api/v1/jobs/{job_id}/generate/approve", json={}).status_code == 200
         assert client.post(path, json=body).status_code == 200
         if name == through:
             break
@@ -470,3 +472,78 @@ def test_ordered_human_readable_artifact_names() -> None:
     assert b'"operation_key"' in initial
     assert b'"sequence_index": 1' in initial
     assert b'"sequence_index": 2' in repaired
+
+
+def test_status_pass_is_not_repair_eligible() -> None:
+    client = _client(critique=FakeCritiqueProvider())
+    job_id = _seed_critiqued(client)
+    status = client.get(f"/api/v1/jobs/{job_id}/status").json()
+    assert status["critique_overall_result"] == "pass"
+    assert status["repair_eligible"] is False
+    assert status["critique_matches_generation"] is True
+    assert status["generation_output_available"] is True
+    blocked = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "REPAIR_NOT_REQUIRED"
+
+
+def test_status_repair_required_is_repair_eligible() -> None:
+    client = _client()
+    job_id = _seed_critiqued(client)
+    status = client.get(f"/api/v1/jobs/{job_id}/status").json()
+    assert status["critique_overall_result"] == "repair_required"
+    assert status["repair_eligible"] is True
+    assert status["repair_available"] is False
+    assert status["repair_count"] == 0
+    assert status["repair_limit"] == 2
+
+
+def test_status_disables_repair_after_budget_and_hold() -> None:
+    critique = FakeCritiqueProvider(
+        violations=["repair_required", "repair_required", "repair_required"]
+    )
+    client = _client(critique=critique)
+    job_id = _seed_critiqued(client)
+    assert client.post(f"/api/v1/jobs/{job_id}/repair", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/critique", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/repair", json={}).status_code == 200
+    assert client.post(f"/api/v1/jobs/{job_id}/critique", json={}).status_code == 200
+    status = client.get(f"/api/v1/jobs/{job_id}/status").json()
+    assert status["repair_count"] == 2
+    assert status["repair_eligible"] is False
+    held = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
+    assert held.status_code == 200
+    body = held.json()["repair"]
+    assert body["plan"]["action"] == "hold"
+    assert any("budget" in reason for reason in body["plan"]["hold_reasons"])
+    after = client.get(f"/api/v1/jobs/{job_id}/status").json()
+    assert after["repair_eligible"] is False
+
+
+class _SucceedThenUncertain:
+    def __init__(self) -> None:
+        self._ok = FakeGenerationProvider()
+        self._hold = FakeGenerationProvider(mode="uncertain")
+        self.n = 0
+        self.requests: list[object] = []
+
+    def capabilities(self) -> frozenset:
+        return self._ok.capabilities()
+
+    def generate(self, request):  # noqa: ANN001
+        self.n += 1
+        self.requests.append(request)
+        if self.n == 1:
+            return self._ok.generate(request)
+        return self._hold.generate(request)
+
+
+def test_held_repair_does_not_mark_generation_output_available() -> None:
+    client = _client(generation=_SucceedThenUncertain())  # type: ignore[arg-type]
+    job_id = _seed_critiqued(client)
+    res = client.post(f"/api/v1/jobs/{job_id}/repair", json={})
+    assert res.status_code == 200, res.text
+    assert res.json()["repair"]["status"] in {"hold", "failed"}
+    status = client.get(f"/api/v1/jobs/{job_id}/status").json()
+    assert status["generation_output_available"] is False
+    assert status["repair_eligible"] is False

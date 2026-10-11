@@ -2,6 +2,7 @@ import { itemTaxonomy, itemTaxonomyGroups } from "../../config/options";
 import type { ProjectIssue } from "../../lib/projectBrief";
 import type { ItemDraft, ReferencesDraft } from "../../types/draft";
 import { StepFooter } from "../ui/chrome";
+import { StudioSelect } from "../ui/StudioSelect";
 import { ProjectReferencesSection } from "./ProjectReferencesSection";
 
 type UpdateItem = (update: (current: ItemDraft) => ItemDraft) => void;
@@ -37,11 +38,15 @@ export function ProjectItemSection({
       <div className="taxonomy">
         <label className="select-field">
           <span>Department</span>
-          <select
+          <StudioSelect
             value={item.department ?? ""}
             disabled={automatic}
-            onChange={(event) => {
-              const departmentId = event.target.value || null;
+            options={[{ value: "", label: "Automatic from references" }]}
+            groups={itemTaxonomyGroups.map((group) => ({
+              label: group.label,
+              options: group.options.map((option) => ({ value: option.id, label: option.label })),
+            }))}
+            onChange={(departmentId) => {
               if (!departmentId) {
                 onItem(() => ({ categoryState: "automatic_unknown", department: null, category: null, subcategory: null }));
                 return;
@@ -53,59 +58,40 @@ export function ProjectItemSection({
                 subcategory: null,
               }));
             }}
-          >
-            <option value="">Automatic from references</option>
-            {itemTaxonomyGroups.map((group) => (
-              <optgroup key={group.label} label={group.label}>
-                {group.options.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          />
         </label>
         <label className="select-field">
           <span>Category</span>
-          <select
+          <StudioSelect
             value={item.category ?? ""}
             disabled={automatic || !department || department.categories.length === 0}
-            onChange={(event) => {
-              const categoryId = event.target.value || null;
+            options={[
+              { value: "", label: "Automatic from references" },
+              ...(department?.categories.map((option) => ({ value: option.id, label: option.label })) ?? []),
+            ]}
+            onChange={(categoryId) => {
               onItem((current) => ({
                 ...current,
                 categoryState: "specified",
-                category: categoryId,
+                category: categoryId || null,
                 subcategory: null,
               }));
             }}
-          >
-            <option value="">Automatic from references</option>
-            {department?.categories.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label className="select-field">
           <span>Sub-category</span>
-          <select
+          <StudioSelect
             value={item.subcategory ?? ""}
             disabled={automatic || !category || category.subcategories.length === 0}
-            onChange={(event) => {
-              const subcategory = event.target.value || null;
-              onItem((current) => ({ ...current, categoryState: "specified", subcategory }));
+            options={[
+              { value: "", label: "Automatic from references" },
+              ...(category?.subcategories.map((option) => ({ value: option.id, label: option.label })) ?? []),
+            ]}
+            onChange={(subcategory) => {
+              onItem((current) => ({ ...current, categoryState: "specified", subcategory: subcategory || null }));
             }}
-          >
-            <option value="">Automatic from references</option>
-            {category?.subcategories.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          />
         </label>
       </div>
 

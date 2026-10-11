@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { JobWorkspace } from "../components/jobs/JobWorkspace";
+import { loadJobSession, type JobSession } from "../lib/jobSession";
 import { runStudioStepTransition } from "../motion/studioMotion";
 import { StudioShell } from "../components/layout/StudioShell";
 import { ItemSection } from "../components/sections/ItemSection";
@@ -30,6 +32,7 @@ export function ClientFirstPage() {
 function ClientFirstExperience() {
   const [mode, setMode] = useState<"projects" | "manual">("manual");
   const [section, setSection] = useState<SectionId>("job");
+  const [jobSession, setJobSession] = useState<JobSession | null>(() => loadJobSession());
   const [projectStep, setProjectStep] = useState<ProjectStep>("project");
   const [projectStart, setProjectStart] = useState<ProjectStart>("product_or_collection");
   const [existingRoom, setExistingRoom] = useState("");
@@ -73,7 +76,7 @@ function ClientFirstExperience() {
       mode={mode}
       onMode={setMode}
       steps={mode === "projects" ? projectFlow : primaryFlow}
-      section={mode === "projects" ? projectStep : section}
+      section={mode === "projects" ? projectStep : jobSession ? "review" : section}
       onSection={(next) => {
         if (mode === "projects") {
           if (next === "project" || next === "item" || next === "scope") {
@@ -129,21 +132,36 @@ function ClientFirstExperience() {
           onStartOver={resetProject}
         />
       ) : null}
-      {mode === "manual" && section === "job" ? <JobSection onContinue={() => openItemFromJob(() => setSection("item"))} /> : null}
-      {mode === "manual" && section === "item" ? (
+      {mode === "manual" && !jobSession && section === "job" ? <JobSection onContinue={() => openItemFromJob(() => setSection("item"))} /> : null}
+      {mode === "manual" && !jobSession && section === "item" ? (
         <ItemSection onBack={() => setSection("job")} onContinue={() => setSection("scope")} />
       ) : null}
-      {mode === "manual" && section === "scope" ? (
+      {mode === "manual" && !jobSession && section === "scope" ? (
         <ScopeSection onBack={() => setSection("item")} onContinue={() => setSection("preferences")} />
       ) : null}
-      {mode === "manual" && section === "preferences" ? (
+      {mode === "manual" && !jobSession && section === "preferences" ? (
         <PreferencesSection onBack={() => setSection("scope")} onContinue={() => setSection("suggestions")} />
       ) : null}
-      {mode === "manual" && section === "suggestions" ? (
+      {mode === "manual" && !jobSession && section === "suggestions" ? (
         <SuggestionsSection onBack={() => setSection("preferences")} onContinue={() => setSection("review")} />
       ) : null}
-      {mode === "manual" && section === "review" ? (
-        <ReviewSection onBack={() => setSection("suggestions")} onNavigate={openSection} onStartOver={() => setSection("job")} />
+      {mode === "manual" && jobSession ? (
+        <JobWorkspace
+          session={jobSession}
+          onSession={setJobSession}
+          onLeave={() => {
+            setJobSession(null);
+            setSection("job");
+          }}
+        />
+      ) : null}
+      {mode === "manual" && !jobSession && section === "review" ? (
+        <ReviewSection
+          onBack={() => setSection("suggestions")}
+          onNavigate={openSection}
+          onStartOver={() => setSection("job")}
+          onJobReady={setJobSession}
+        />
       ) : null}
     </StudioShell>
   );

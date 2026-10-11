@@ -159,9 +159,10 @@ describe("validation and mock submit", () => {
       const result = await submitPreparedJob(draft, "dev-idem-success", draft.items[0].id);
       assert.equal(result.ok, true);
       if (!result.ok) return;
+      assert.equal(result.response.mock, true);
+      if (!result.response.mock) return;
       assert.match(result.response.jobId, /^dev-job-/);
       assert.equal(result.response.contractVersion, CONTRACT_VERSION);
-      assert.equal(result.response.mock, true);
       assert.equal(result.contract.endpoint, PROPOSED_JOBS_ENDPOINT);
       assert.equal(result.contract.ownerIdentity.value, null);
       assert.equal(result.contract.fileIds.value, null);

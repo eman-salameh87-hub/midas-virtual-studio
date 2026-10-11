@@ -8,6 +8,7 @@ an image, or call a provider gateway for rendering.
 from app.contracts.brain import BrainPlan
 from app.contracts.engine import EngineCompile
 from app.contracts.stylist import StylistPlan
+from app.stages.output_type import is_white_bk, white_bk_prompt_errors
 from app.providers.brain import BrainEvidenceRef
 from app.providers.engine import (
     EngineCompiler,
@@ -198,6 +199,9 @@ def validate_engine_compile(engine_input: EngineInput, artifact: EngineCompile) 
         raise EngineCompileInvalidError(
             "a ready Engine compile must include the exact prompt"
         )
+    if artifact.status == "ready" and is_white_bk(contract):
+        for message in white_bk_prompt_errors(artifact.exact_prompt):
+            raise EngineCompileInvalidError(message)
 
 
 def engine_may_proceed(brain_plan: BrainPlan, stylist_plan: StylistPlan) -> bool:

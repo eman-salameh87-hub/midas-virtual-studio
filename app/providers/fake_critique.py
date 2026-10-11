@@ -124,7 +124,21 @@ def assessment_for(
         findings = findings[1:]
     drift: list[AttributeDrift] = []
     view_result = "pass"
-    if violation == "view_drift":
+    scene_result = "pass"
+    logo_result = "pass"
+    if violation == "white_bk_room":
+        scene_result = "fail"
+        overall = "repair_required"
+        summary = "White BK candidate shows a room or lifestyle scene instead of a pure white background."
+    elif violation == "white_bk_logo":
+        logo_result = "fail"
+        overall = "repair_required"
+        summary = "White BK candidate reproduces an unwanted source logo or overlay text."
+    elif violation == "white_bk_uncertain":
+        scene_result = "uncertain"
+        overall = "repair_required"
+        summary = "White BK background purity could not be verified."
+    elif violation == "view_drift":
         planned = _planned_view_text(critique_input)
         recorded = record_view_drift(planned=planned, observed="straight-on")
         if recorded is not None:
@@ -154,7 +168,12 @@ def assessment_for(
             drift=[],
         )
 
-    sections = _compliance(critique_input, view_result=view_result)
+    sections = _compliance(
+        critique_input,
+        view_result=view_result,
+        scene_result=scene_result,
+        logo_result=logo_result,
+    )
     return CritiqueAssessment(
         job_id=critique_input.job_id,
         contract_id=critique_input.contract_id,
@@ -185,11 +204,16 @@ def _planned_view_text(critique_input: CritiqueInput) -> str:
 
 
 def _compliance(
-    critique_input: CritiqueInput, *, view_result: str
+    critique_input: CritiqueInput,
+    *,
+    view_result: str,
+    scene_result: str = "pass",
+    logo_result: str = "pass",
 ) -> dict[str, list[CritiqueCompliance]]:
     preferences = critique_input.contract.preferences
     scene = critique_input.stylist_plan.scene
     layout = critique_input.stylist_plan.selected_layout
+    white_bk = "White BK" in critique_input.contract.intent.requested_outcomes
     return {
         "styling": [
             CritiqueCompliance(
@@ -234,7 +258,31 @@ def _compliance(
                 ],
             )
         ],
-        "scene": [
+        "scene": _scene_checks(
+            critique_input,
+            scene=scene,
+            white_bk=white_bk,
+            scene_result=scene_result,
+            logo_result=logo_result,
+        ),
+    }
+
+
+def _scene_checks(
+    critique_input: CritiqueInput,
+    *,
+    scene: object,
+    white_bk: bool,
+    scene_result: str,
+    logo_result: str,
+) -> list[CritiqueCompliance]:
+    evidence = [
+        f"original={critique_input.original_reference_id}",
+        f"generated={critique_input.generated_output_id}",
+        "inspected generated image, not compile exact_prompt",
+    ]
+    if not white_bk:
+        return [
             CritiqueCompliance(
                 section="scene",
                 result="pass",
@@ -245,5 +293,35 @@ def _compliance(
                     f"light={scene.light}",
                 ],
             )
-        ],
-    }
+        ]
+    background_obs = {
+        "pass": "generated candidate has a pure white background and no room or lifestyle scene",
+        "fail": "generated candidate shows a room or lifestyle scene instead of pure white",
+        "uncertain": "background purity could not be verified from the generated image",
+    }[scene_result]
+    logo_obs = {
+        "pass": "generated candidate does not reproduce source logos, watermarks, labels, or added text",
+        "fail": "generated candidate reproduces an unwanted source logo or overlay text",
+        "uncertain": "source logo or overlay text could not be verified from the generated image",
+    }[logo_result]
+    return [
+        CritiqueCompliance(
+            section="scene",
+            result=scene_result,  # type: ignore[arg-type]
+            observation=background_obs,
+            expected=(
+                "pure white (#FFFFFF) background; product alone; no room, no lifestyle scene, "
+                "no decorative props, no floor or wall scene"
+            ),
+            evidence=evidence,
+        ),
+        CritiqueCompliance(
+            section="scene",
+            result=logo_result,  # type: ignore[arg-type]
+            observation=logo_obs,
+            expected=(
+                "do not reproduce source logos, watermarks, labels, or added text unless requested"
+            ),
+            evidence=evidence,
+        ),
+    ]

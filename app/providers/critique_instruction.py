@@ -16,6 +16,12 @@ Locked facts that a high aesthetic score cannot override:
 
 If the generated image is missing the product, shows the wrong count, changes identity, or changes source-supported construction, overall_result must not be "pass". Use "repair_required" when the failure is observable, or "hold" when the evidence is insufficient to decide.
 
+If requested_outcomes includes "White BK", inspect the generated image itself (not the compile prompt) for:
+- a pure white (#FFFFFF) background
+- the product alone: no room, no lifestyle scene, no decorative props, no floor or wall scene
+- no added logos, watermarks, labels, or text, unless the user explicitly requested them
+Put the background/scene check in scene_compliance. Put the logo/text check in scene_compliance or styling_compliance. overall_result must not be "pass" if those checks fail or are uncertain. A product-identity pass cannot override an output-type failure.
+
 Do not infer unsupported product facts (hidden sides, unseen materials, guessed SKUs). Distinguish observable failure (result "fail") from uncertainty (result "uncertain"). Preserve original facts; add findings only.
 
 Copy job_id, contract_id, contract_revision, engine_contract_id, engine_revision, generation_operation_key, and generation_output_id from the supplied payload. Revisions must be JSON numbers, not strings.
@@ -122,6 +128,8 @@ Exact object (replace values from the supplied job; keep this structure):
 FORBIDDEN:
 - treating compile exact_prompt as proof the image is correct
 - overall_result "pass" when inventory, identity, or geometry failed or is uncertain
+- overall_result "pass" for White BK when the background is not pure white, a room/lifestyle scene is present, or unwanted logos/text are present or unverified
+- treating compile exact_prompt as proof that White BK background purity or logo absence is satisfied
 - inventing unseen construction or count
 - extra keys
 - empty findings

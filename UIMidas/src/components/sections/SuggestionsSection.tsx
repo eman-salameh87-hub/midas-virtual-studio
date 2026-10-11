@@ -2,16 +2,23 @@ import { moodOptions } from "../../config/options";
 import { useSuggestionsDraft } from "../../state/DraftProvider";
 import type { MoodVibe } from "../../types/draft";
 import { StepFooter } from "../ui/chrome";
+import { StudioSelect } from "../ui/StudioSelect";
 
 export function SuggestionsSection({ onBack, onContinue }: { onBack: () => void; onContinue: () => void }) {
   const [suggestions, setSuggestions] = useSuggestionsDraft();
 
-  function setPlants(on: boolean) {
-    setSuggestions((current) => ({ ...current, plants: on ? "suggest" : "unspecified" }));
+  function togglePlants() {
+    setSuggestions((current) => ({
+      ...current,
+      plants: current.plants === "suggest" ? "leave_out" : "suggest",
+    }));
   }
 
-  function setHuman(on: boolean) {
-    setSuggestions((current) => ({ ...current, human: on ? "suggest" : "unspecified" }));
+  function toggleHuman() {
+    setSuggestions((current) => ({
+      ...current,
+      human: current.human === "suggest" ? "leave_out" : "suggest",
+    }));
   }
 
   function setMood(mood: MoodVibe) {
@@ -27,7 +34,7 @@ export function SuggestionsSection({ onBack, onContinue }: { onBack: () => void;
       <fieldset className="suggestions__group">
         <legend>Styling suggestions</legend>
         <div className="finish-grid">
-          <button type="button" className="finish" aria-pressed={suggestions.plants === "suggest"} onClick={() => setPlants(suggestions.plants !== "suggest")}>
+          <button type="button" className="finish" aria-pressed={suggestions.plants === "suggest"} onClick={togglePlants}>
             <span className="finish__copy">
               <PlantMark />
               <span>
@@ -37,7 +44,7 @@ export function SuggestionsSection({ onBack, onContinue }: { onBack: () => void;
             </span>
             <span className="finish__switch" aria-hidden="true" />
           </button>
-          <button type="button" className="finish" aria-pressed={suggestions.human === "suggest"} onClick={() => setHuman(suggestions.human !== "suggest")}>
+          <button type="button" className="finish" aria-pressed={suggestions.human === "suggest"} onClick={toggleHuman}>
             <span className="finish__copy">
               <PersonMark />
               <span>
@@ -50,15 +57,13 @@ export function SuggestionsSection({ onBack, onContinue }: { onBack: () => void;
         </div>
       </fieldset>
 
-      <label className="select-field">
+      <label className="select-field select-field--type">
         <span>Mood / Vibes</span>
-        <select value={suggestions.mood ?? "automatic"} onChange={(event) => setMood(event.target.value as MoodVibe)}>
-          {moodOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+        <StudioSelect
+          value={suggestions.mood ?? "automatic"}
+          options={moodOptions}
+          onChange={(mood) => setMood(mood as MoodVibe)}
+        />
       </label>
 
       <StepFooter onBack={onBack} onContinue={onContinue} continueLabel="Review choices" />

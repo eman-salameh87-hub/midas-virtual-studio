@@ -7,6 +7,7 @@ This module does not choose a model, retrieve a catalogue, or compile an image p
 
 from app.contracts.brain import BrainPlan
 from app.contracts.stylist import StylistPlan
+from app.stages.output_type import is_white_bk, white_bk_stylist_errors
 from app.providers.brain import BrainEvidenceRef
 from app.providers.stylist import (
     StylistInput,
@@ -100,6 +101,9 @@ def validate_stylist_plan(stylist_input: StylistInput, plan: StylistPlan) -> Non
         raise StylistPlanInvalidError("Stylist plan must bind the stored BrainPlan")
     if plan.product_role != contract.item.product_role:
         raise StylistPlanInvalidError("Stylist plan product_role must match the contract")
+    if is_white_bk(contract):
+        for message in white_bk_stylist_errors(plan):
+            raise StylistPlanInvalidError(message)
 
     # Verify no unverified Midas companions are introduced
     verified_skus = {c.sku for c in stylist_input.verified_complements}

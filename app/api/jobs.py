@@ -19,6 +19,7 @@ from app.api.schemas import (
     ExecuteEyeRequest,
     ExecuteEyeResponse,
     ExecuteGenerateRequest,
+    PreGenerationApprovalRequest,
     ExecuteGenerateResponse,
     ExecuteRepairRequest,
     ExecuteRepairResponse,
@@ -68,6 +69,7 @@ from app.providers.openrouter import (
 from app.providers.fake_repair import FakeRepairPlanner
 from app.providers.repair import RepairPlanner
 from app.providers.stylist import StylistProvider
+from app.runtime.orchestrator import schedule_planning
 from app.runtime.jobs import (
     BrainNotReadyError,
     BrainNotRunError,
@@ -80,6 +82,7 @@ from app.runtime.jobs import (
     EyeNotRunError,
     EyeProviderFailedError,
     GenerationNotReadyError,
+    PreGenerationApprovalRequiredError,
     GenerationNotRunError,
     GenerationProviderFailedError,
     JobNotFoundError,
@@ -90,6 +93,7 @@ from app.runtime.jobs import (
     StylistNotRunError,
     StylistProviderFailedError,
     approve_job,
+    approve_pre_generation,
     create_job_from_intake,
     execute_job_brain,
     execute_job_compile,
@@ -234,13 +238,19 @@ def _revision_mismatch(job_id: str, expected: int, actual: int) -> NoReturn:
         "The server derives source_hashes from those file digests and "
         "request_hash from the canonical contract. "
         "Bytes are stored on the job; they are not part of the frozen identity contract. "
-        "Eye is not executed. Unresolved placeholder values are rejected."
+        "The create response is the intake snapshot. Planning (Eye → Brain → Stylist → "
+        "Compile) is scheduled in-process after the response and is not durable across "
+        "process restart. Generate is not scheduled. Unresolved placeholder values are rejected."
     ),
     responses={422: _ERRORS[422]},
 )
 def post_job(
     body: CreateJobRequest,
     store: InMemoryJobStore = Depends(get_job_store),
+    eye_provider: EyeProvider = Depends(get_eye_provider),
+    brain_provider: BrainProvider = Depends(get_brain_provider),
+    stylist_provider: StylistProvider = Depends(get_stylist_provider),
+    compiler: EngineCompiler = Depends(get_engine_compiler),
 ) -> CreateJobResponse:
     try:
         record = create_job_from_intake(store, body.contract.model_dump(mode="python"))
@@ -251,6 +261,16 @@ def post_job(
             message="Invalid request",
             details={"reason": str(exc)},
         ) from exc
+    schedule_planning(
+        store,
+        job_id=record.job_id,
+        eye_provider=eye_provider,
+        brain_provider=brain_provider,
+        stylist_provider=stylist_provider,
+        compiler=compiler,
+        owner_id=record.owner_id,
+        revision=record.revision,
+    )
     return create_job_response(record)
 
 
@@ -766,6 +786,58 @@ def get_job_compile_endpoint(
 
 
 @router.post(
+    "/jobs/{job_id}/generate/approve",
+    response_model=JobStatusView,
+    summary="Approve the compiled render before generation",
+    description=(
+        "Record pre-generation approval for the current owner, contract revision, "
+        "and request hash. This authorizes one render. It does not approve release."
+    ),
+    responses={
+        403: _ERRORS[403],
+        404: _ERRORS[404],
+        409: _ERRORS[409],
+    },
+)
+def post_job_generate_approve(
+    job_id: str,
+    body: PreGenerationApprovalRequest | None = None,
+    store: InMemoryJobStore = Depends(get_job_store),
+    owner_id: OwnerIdParam = None,
+    revision: RevisionParam = None,
+) -> JobStatusView:
+    try:
+        record = approve_pre_generation(
+            store,
+            job_id=job_id,
+            owner_id=owner_id,
+            revision=revision,
+            expires_at=None if body is None else body.expires_at,
+        )
+    except JobNotFoundError:
+        _not_found(job_id)
+    except JobOwnerMismatchError as exc:
+        _owner_mismatch(job_id, exc.owner_id)
+    except RevisionMismatchError as exc:
+        _revision_mismatch(job_id, exc.expected, exc.actual)
+    except EngineNotRunError:
+        raise ApiError(
+            status_code=409,
+            code="ENGINE_NOT_RUN",
+            message="Engine compile has not been executed for this job",
+            details={"job_id": job_id},
+        )
+    except GenerationNotReadyError as exc:
+        raise ApiError(
+            status_code=409,
+            code="GENERATION_NOT_READY",
+            message="Engine compile holds this job; pre-generation approval was not recorded",
+            details={"job_id": job_id, "reasons": exc.reasons},
+        ) from exc
+    return job_status_view(record)
+
+
+@router.post(
     "/jobs/{job_id}/generate",
     response_model=ExecuteGenerateResponse,
     summary="Execute generation",
@@ -862,6 +934,13 @@ def post_job_generate(
             message="Engine compile holds this job; generation was not dispatched",
             details={"job_id": job_id, "reasons": exc.reasons},
         )
+    except PreGenerationApprovalRequiredError as exc:
+        raise ApiError(
+            status_code=409,
+            code="PRE_GENERATION_APPROVAL_REQUIRED",
+            message="Pre-generation approval is required before a render is dispatched",
+            details={"job_id": job_id, "reasons": exc.reasons},
+        ) from exc
     except (ValueError, ValidationError) as exc:
         raise ApiError(
             status_code=422,

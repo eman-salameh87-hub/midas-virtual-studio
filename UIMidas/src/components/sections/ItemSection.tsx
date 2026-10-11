@@ -1,6 +1,7 @@
 import { itemTaxonomy, itemTaxonomyGroups } from "../../config/options";
 import { useItemDraft } from "../../state/DraftProvider";
 import { StepFooter } from "../ui/chrome";
+import { StudioSelect } from "../ui/StudioSelect";
 import { ReferencesSection } from "./ReferencesSection";
 
 export function ItemSection({ onBack, onContinue }: { onBack: () => void; onContinue: () => void }) {
@@ -18,11 +19,15 @@ export function ItemSection({ onBack, onContinue }: { onBack: () => void; onCont
       <div className="taxonomy">
         <label className="select-field">
           <span>Department</span>
-          <select
+          <StudioSelect
             value={item.department ?? ""}
             disabled={automatic}
-            onChange={(event) => {
-              const departmentId = event.target.value || null;
+            options={[{ value: "", label: "Automatic from references" }]}
+            groups={itemTaxonomyGroups.map((group) => ({
+              label: group.label,
+              options: group.options.map((option) => ({ value: option.id, label: option.label })),
+            }))}
+            onChange={(departmentId) => {
               if (!departmentId) {
                 setItem(() => ({ categoryState: "automatic_unknown", department: null, category: null, subcategory: null }));
                 return;
@@ -34,59 +39,40 @@ export function ItemSection({ onBack, onContinue }: { onBack: () => void; onCont
                 subcategory: null,
               }));
             }}
-          >
-            <option value="">Automatic from references</option>
-            {itemTaxonomyGroups.map((group) => (
-              <optgroup key={group.label} label={group.label}>
-                {group.options.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          />
         </label>
         <label className="select-field">
           <span>Category</span>
-          <select
+          <StudioSelect
             value={item.category ?? ""}
             disabled={automatic || !department || department.categories.length === 0}
-            onChange={(event) => {
-              const categoryId = event.target.value || null;
+            options={[
+              { value: "", label: "Automatic from references" },
+              ...(department?.categories.map((option) => ({ value: option.id, label: option.label })) ?? []),
+            ]}
+            onChange={(categoryId) => {
               setItem((current) => ({
                 ...current,
                 categoryState: "specified",
-                category: categoryId,
+                category: categoryId || null,
                 subcategory: null,
               }));
             }}
-          >
-            <option value="">Automatic from references</option>
-            {department?.categories.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label className="select-field">
           <span>Sub-category</span>
-          <select
+          <StudioSelect
             value={item.subcategory ?? ""}
             disabled={automatic || !category || category.subcategories.length === 0}
-            onChange={(event) => {
-              const subcategory = event.target.value || null;
-              setItem((current) => ({ ...current, categoryState: "specified", subcategory }));
+            options={[
+              { value: "", label: "Automatic from references" },
+              ...(category?.subcategories.map((option) => ({ value: option.id, label: option.label })) ?? []),
+            ]}
+            onChange={(subcategory) => {
+              setItem((current) => ({ ...current, categoryState: "specified", subcategory: subcategory || null }));
             }}
-          >
-            <option value="">Automatic from references</option>
-            {category?.subcategories.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          />
         </label>
       </div>
 

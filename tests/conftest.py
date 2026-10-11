@@ -7,6 +7,7 @@ from app.api.jobs import (
     get_eye_provider,
     get_generation_provider,
     get_repair_planner,
+    get_stylist_provider,
 )
 from app.main import app
 from app.providers.fake_brain import FakeBrainProvider
@@ -15,15 +16,21 @@ from app.providers.fake_eye import FakeEyeProvider
 from app.providers.fake_critique import FakeCritiqueProvider
 from app.providers.fake_generation import FakeGenerationProvider
 from app.providers.fake_repair import FakeRepairPlanner
+from app.providers.fake_stylist import FakeStylistProvider
 from app.runtime.artifacts import reset_artifact_store
+from app.runtime.client_briefs import CLIENT_BRIEF_STORE
+from app.runtime.orchestrator import join_scheduled_planning
 from app.runtime.state import JOB_STORE
 
 
 @pytest.fixture(autouse=True)
 def clear_job_store() -> None:
     JOB_STORE.clear()
+    CLIENT_BRIEF_STORE.clear()
     yield
+    join_scheduled_planning()
     JOB_STORE.clear()
+    CLIENT_BRIEF_STORE.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +59,16 @@ def use_fake_brain_unless_live(request: pytest.FixtureRequest) -> None:
     app.dependency_overrides[get_brain_provider] = lambda: FakeBrainProvider()
     yield
     app.dependency_overrides.pop(get_brain_provider, None)
+
+
+@pytest.fixture(autouse=True)
+def use_fake_stylist_unless_live(request: pytest.FixtureRequest) -> None:
+    if request.node.get_closest_marker("live_provider"):
+        yield
+        return
+    app.dependency_overrides[get_stylist_provider] = lambda: FakeStylistProvider()
+    yield
+    app.dependency_overrides.pop(get_stylist_provider, None)
 
 
 @pytest.fixture(autouse=True)

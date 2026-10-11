@@ -49,6 +49,49 @@ def repair_budget_remaining(record: JobRecord) -> bool:
     return current_repair_count(record) < REPAIR_LIMIT
 
 
+def current_generation_output_id(record: JobRecord) -> str | None:
+    stored = record.generation
+    if stored is None or stored.receipt is None or stored.receipt.output is None:
+        return None
+    if stored.receipt.status != "completed":
+        return None
+    return stored.receipt.output.output_id
+
+
+def critique_matches_generation(record: JobRecord) -> bool:
+    stored = record.critique
+    output_id = current_generation_output_id(record)
+    if stored is None or stored.result is None or output_id is None:
+        return False
+    return stored.result.generation_output_id == output_id
+
+
+def repair_is_eligible(record: JobRecord) -> bool:
+    """True when POST /repair may run for the current critique and generation."""
+
+    if record.state == "failed":
+        return False
+    if record.state == "hold" or (record.hold is not None and record.hold.status == "hold"):
+        return False
+    stored = record.critique
+    if stored is None or stored.result is None:
+        return False
+    assessment = stored.result
+    if assessment.overall_result != "repair_required" or assessment.status == "hold":
+        return False
+    if not critique_matches_generation(record):
+        return False
+    if not repair_budget_remaining(record):
+        return False
+    latest = record.repair
+    if (
+        latest is not None
+        and latest.plan.critique_generation_output_id == assessment.generation_output_id
+    ):
+        return False
+    return True
+
+
 def failed_findings(assessment: CritiqueAssessment) -> list:
     return [item for item in assessment.findings if item.result == "fail"]
 

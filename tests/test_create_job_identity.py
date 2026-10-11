@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.contracts.job import Phase0JobContract
 from app.main import app
 from app.runtime.artifacts import get_artifact_store
+from app.runtime.orchestrator import join_scheduled_planning
 from app.runtime.recovery import recover_jobs_from_artifacts
 from app.runtime.state import JOB_STORE
 from app.stages.package import build_delivery_manifest
@@ -113,6 +114,7 @@ def test_revision_keeps_the_previous_hash() -> None:
 def test_derived_identity_survives_recovery_and_manifest() -> None:
     response = _client().post("/api/v1/jobs", json={"contract": _without_identity()})
     job_id = response.json()["job_id"]
+    assert join_scheduled_planning(job_id)
     created = JOB_STORE.get(job_id)
     request_hash = created.contract.request_identity.request_hash
     source_hash = created.contract.request_identity.source_hashes[0].content_hash
@@ -130,6 +132,7 @@ def test_derived_identity_survives_recovery_and_manifest() -> None:
 def test_existing_persisted_request_identity_still_loads() -> None:
     response = _client().post("/api/v1/jobs", json={"contract": _without_identity()})
     job_id = response.json()["job_id"]
+    assert join_scheduled_planning(job_id)
     raw = json.loads(get_artifact_store().get_artifact(job_id, "job.json").decode("utf-8"))
     assert raw["contract"]["request_identity"]["request_hash"]
     contract = Phase0JobContract.model_validate(raw["contract"])

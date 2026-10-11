@@ -22,7 +22,7 @@ from app.contracts.generation import GenerationOperation, GenerationReceipt
 from app.contracts.job import Phase0JobContract
 from app.contracts.reference import ReferenceMeasurement
 from app.contracts.repair import RepairPlan
-from app.contracts.review import OwnerApproval, PackageRelease
+from app.contracts.review import OwnerApproval, PackageRelease, PreGenerationApproval
 from app.contracts.stylist import StylistPlan
 from app.providers.brain import BrainEvidenceRef
 from app.runtime.checksum import annotate_checksum
@@ -119,6 +119,11 @@ def reconstruct_job_record(
         release = (
             PackageRelease.model_validate(raw_job["release"])
             if isinstance(raw_job.get("release"), dict)
+            else None
+        )
+        pre_generation_approval = (
+            PreGenerationApproval.model_validate(raw_job["pre_generation_approval"])
+            if isinstance(raw_job.get("pre_generation_approval"), dict)
             else None
         )
     except (ValidationError, TypeError, ValueError):
@@ -241,6 +246,7 @@ def reconstruct_job_record(
             complete=complete,
             releasable=releasable,
             approval=approval,
+            pre_generation_approval=pre_generation_approval,
             release=release,
             events=[],
             reference_bytes=reference_bytes,

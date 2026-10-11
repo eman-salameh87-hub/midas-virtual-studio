@@ -12,6 +12,7 @@ import type {
 } from "../../types/draft";
 import { StepFooter } from "../ui/chrome";
 import { ChoiceCard, NumberField, TextField } from "../ui/controls";
+import { StudioSelect } from "../ui/StudioSelect";
 
 const conceptOrder = outputConceptOptions.map((option) => option.value);
 
@@ -149,42 +150,27 @@ export function ScopeSection({ onBack, onContinue }: { onBack: () => void; onCon
         <div className="delivery-list">
           <label className="delivery-row">
             <span>Views</span>
-            <select
+            <StudioSelect
               value={shown(displayedView(scope), deliveryViewOptions, defaultView)}
-              onChange={(event) => setDelivery({ view: event.target.value as OutputView })}
-            >
-              {deliveryViewOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              options={deliveryViewOptions}
+              onChange={(view) => setDelivery({ view: view as OutputView })}
+            />
           </label>
           <label className="delivery-row">
             <span>Image proportions</span>
-            <select
+            <StudioSelect
               value={shown(displayedProportion(scope), deliveryProportionOptions, defaultProportion)}
-              onChange={(event) => setDelivery({ proportion: event.target.value as ImageProportion })}
-            >
-              {deliveryProportionOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              options={deliveryProportionOptions}
+              onChange={(proportion) => setDelivery({ proportion: proportion as ImageProportion })}
+            />
           </label>
           <label className="delivery-row">
             <span>Resolution</span>
-            <select
+            <StudioSelect
               value={shown(displayedResolution(scope), deliveryResolutionOptions, defaultResolution)}
-              onChange={(event) => setDelivery({ resolution: event.target.value as ImageResolution })}
-            >
-              {deliveryResolutionOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              options={deliveryResolutionOptions}
+              onChange={(resolution) => setDelivery({ resolution: resolution as ImageResolution })}
+            />
           </label>
         </div>
       </details>
