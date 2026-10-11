@@ -10,8 +10,9 @@ import { CONTRACT_VERSION, type ProposedJobContract } from "../contract/buildJob
  * Does not send ownerIdentity placeholders as production identity. Does not
  * call POST /api/v1/jobs, schedule planning, or generate images.
  *
- * Batch, Projects, saved projects, and catalogue execution are not supported
- * by this adapter even when Manual persistence succeeds.
+ * Batch, Projects, and saved projects are not supported by this adapter even
+ * when Manual persistence succeeds. Midas catalogue images are fetched by the
+ * backend during job prepare from the trusted catalogue, not from this adapter.
  */
 
 export const IDENTITY_NOT_CONFIGURED = "IDENTITY_NOT_CONFIGURED";

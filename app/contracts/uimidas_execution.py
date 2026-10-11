@@ -64,7 +64,7 @@ def derive_source_condition(item: NormalizedBriefItem) -> SourceCondition:
     types = {ref.type for ref in item.references}
     has_room = "room_image" in types
     has_spec = "specification_file" in types
-    has_product = bool(types & {"product_image", "other_view", "detail"})
+    has_product = bool(types & {"product_image", "other_view", "detail", "midas"})
     if has_spec and (has_room or has_product):
         condition = "mixed batch"
     elif has_spec:

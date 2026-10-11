@@ -68,4 +68,32 @@ describe("job preparation readiness", () => {
     const draft = executableDraft();
     assert.equal(jobPreparationIssues(draft, draft.items[0].id).length, 0);
   });
+
+  it("treats a Midas catalogue product with a library id as an executable image", () => {
+    const draft = executableDraft();
+    const item = draft.items[0];
+    item.references.items = [
+      {
+        id: "midas-1",
+        type: "midas",
+        source: "midas_library",
+        asset: {
+          id: "midas-asset",
+          fileName: "ABALI DINING TABLE- WHITE",
+          mediaKind: "image",
+          sizeBytes: null,
+          localPreviewUrl: "https://midasfurniture.com/media/catalog/product/x.webp",
+          libraryKey: "165931",
+        },
+        role: "midas_reference",
+        relationship: "same_product",
+        productGroupId: item.references.primaryProductGroupId,
+        localStatus: "ready",
+        localStatusMessage: null,
+      },
+    ];
+    const issues = jobPreparationIssues(draft, item.id);
+    assert.equal(issues.length, 0);
+    assert.equal(issues.some((issue) => issue.message.includes("not executed")), false);
+  });
 });

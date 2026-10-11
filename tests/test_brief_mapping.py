@@ -12,6 +12,7 @@ from app.contracts.brief_mapping import (
     UNRESOLVED_CATEGORY,
     UNRESOLVED_OUTPUT,
     UNRESOLVED_REFERENCE,
+    ReferenceBytes,
     map_saved_brief_to_phase0_intake,
 )
 from app.contracts.client_brief import (
@@ -268,21 +269,74 @@ def test_sku_is_kept_as_protected_identity_and_notes_still_block() -> None:
     assert any("fidelity" in issue.field for issue in result.issues)
 
 
-def test_midas_and_detail_references_are_unsupported() -> None:
+def test_midas_catalogue_reference_maps_when_bytes_are_ingested() -> None:
+    from app.runtime.midas_catalogue import CatalogueProduct
+
     payload = _slice_payload()
-    payload["brief"]["items"][0]["references"].append(
+    payload["brief"]["items"][0]["references"] = [
         {
             "id": "ref-midas",
             "type": "midas",
             "source": "midas_library",
             "role": "midas_reference",
-            "relationship": "supporting_context",
-            "productGroupId": None,
+            "relationship": "same_product",
+            "productGroupId": "group-1",
             "evidence": {
-                "fileName": "sweep.jpg",
+                "fileName": "ABALI DINING TABLE- WHITE",
+                "mediaKind": "image",
+                "sizeBytes": None,
+                "libraryKey": "165931",
+            },
+        }
+    ]
+    product = CatalogueProduct(
+        id="165931",
+        name="ABALI DINING TABLE- WHITE",
+        sku="165931",
+        image_url="https://midasfurniture.com/media/catalog/product/4/3/43-165931_h.webp",
+        product_url="https://midasfurniture.com/qtr_en/abali-dining-table-dining-rooms-midas.html",
+        source_url="https://midasfurniture.com/qtr_en/abali-dining-table-dining-rooms-midas.html",
+    )
+    result = map_saved_brief_to_phase0_intake(
+        _contract(payload),
+        owner_id="owner-slice",
+        contract_id="contract-slice-1",
+        revision=1,
+        reference_files=[
+            ReferenceBytes.model_validate(
+                {"reference_id": "ref-midas", "content_base64": PNG_B64, "media_type": "PNG"}
+            )
+        ],
+        phase0_fields_not_in_brief=None,
+        catalogue_products={"ref-midas": product},
+    )
+    assert result.issues == []
+    assert result.intake is not None
+    assert result.intake["references"][0]["role"] == "Product / vendor reference"
+    assert result.intake["references"][0]["filename"] == "165931.png"
+    assert result.intake["references"][0]["content_base64"] == PNG_B64
+    subjects = {row["subject"]: row["value"] for row in result.intake["statements"]}
+    assert subjects["catalogue sku"] == "165931"
+    assert subjects["catalogue product name"] == "ABALI DINING TABLE- WHITE"
+    assert subjects["catalogue selected role"] == "hero"
+    assert "midasfurniture.com/media/catalog/product/" in subjects["catalogue image url"]
+
+
+def test_detail_references_remain_unsupported() -> None:
+    payload = _slice_payload()
+    payload["brief"]["items"][0]["references"].append(
+        {
+            "id": "ref-detail",
+            "type": "detail",
+            "source": "local_file",
+            "role": "detail",
+            "relationship": "same_product",
+            "productGroupId": "group-1",
+            "evidence": {
+                "fileName": "detail.jpg",
                 "mediaKind": "image",
                 "sizeBytes": 10,
-                "libraryKey": "midas-white-sweep",
+                "libraryKey": None,
             },
         }
     )

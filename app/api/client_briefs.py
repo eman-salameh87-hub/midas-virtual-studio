@@ -114,14 +114,16 @@ class CreateClientBriefRequest(BaseModel):
 class PrepareJobFromBriefRequest(BaseModel):
     """Create a Phase-0 job from a saved brief. Does not rewrite the brief.
 
-    reference_files must include content_base64 for the product image.
+    reference_files must include content_base64 for local product images.
+    Midas catalogue selections are fetched server-side from the trusted catalogue
+    and must not send client image bytes.
     Engine fields that UIMidas does not collect are derived by the adapter.
     phase0_fields_not_in_brief is an optional override for those internals.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    reference_files: list[ReferenceBytes] = Field(min_length=1)
+    reference_files: list[ReferenceBytes] = Field(default_factory=list)
     phase0_fields_not_in_brief: Phase0FieldsNotInBrief | None = None
 
 

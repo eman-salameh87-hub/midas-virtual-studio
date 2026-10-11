@@ -247,7 +247,7 @@ export function ReviewSection({
               ) : (
                 <p className="note">
                   The brief is saved. A Phase-0 job was not created. Generation was not started.
-                  Batch, Projects, saved projects, and catalogue execution are not supported.
+                  Batch, Projects, and saved projects are not supported.
                 </p>
               )}
               {outcome.mappingIssues.length > 0 ? (

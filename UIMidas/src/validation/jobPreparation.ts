@@ -62,12 +62,12 @@ export function jobPreparationIssues(draft: ClientJobDraft, activeItemId?: strin
     issues.push(...referencePreparationIssues(item.id, item.references.items));
   }
 
-  if (!items.some((item) => item.references.items.some((reference) => usableLocalImage(reference.id)))) {
+  if (!items.some((item) => item.references.items.some((reference) => usableProductImage(reference)))) {
     issues.push(
       issue(
         "references",
         "brief.items[0].references",
-        "Upload at least one JPG, PNG, or WebP product image. The file must still be available in this session.",
+        "Add at least one product image: upload a JPG, PNG, or WebP, or choose a Midas catalogue product.",
       ),
     );
   }
@@ -119,13 +119,15 @@ function referencePreparationIssues(
   const issues: ValidationIssue[] = [];
   for (const reference of references) {
     if (reference.source === "midas_library") {
-      issues.push(
-        issue(
-          "references",
-          `items.${itemId}.references.${reference.id}`,
-          "Midas catalogue references are not executed in this job path. Use a local JPG, PNG, or WebP.",
-        ),
-      );
+      if (!reference.asset?.libraryKey?.trim()) {
+        issues.push(
+          issue(
+            "references",
+            `items.${itemId}.references.${reference.id}`,
+            "This Midas catalogue product is missing its catalogue id. Select it again from Choose from Midas.",
+          ),
+        );
+      }
       continue;
     }
     if (reference.source !== "local_file" || reference.localStatus === "error") continue;
@@ -156,4 +158,16 @@ function referencePreparationIssues(
 function usableLocalImage(referenceId: string): boolean {
   const file = localFileFor(referenceId);
   return Boolean(file && isPhase0ImageFile(file));
+}
+
+function usableCatalogueImage(reference: ClientJobDraft["items"][number]["references"]["items"][number]): boolean {
+  return (
+    reference.source === "midas_library" &&
+    Boolean(reference.asset?.libraryKey?.trim()) &&
+    reference.localStatus !== "error"
+  );
+}
+
+function usableProductImage(reference: ClientJobDraft["items"][number]["references"]["items"][number]): boolean {
+  return usableCatalogueImage(reference) || usableLocalImage(reference.id);
 }

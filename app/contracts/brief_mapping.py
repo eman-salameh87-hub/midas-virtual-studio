@@ -12,7 +12,7 @@ brief. product_role is on the brief only for single_item (role / singleItemRole)
 
 from __future__ import annotations
 
-from typing import Any, get_args
+from typing import Any, Mapping, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -160,6 +160,7 @@ _MOODS = {
 }
 _REFERENCE_TYPE_TO_PHASE0 = {
     "product_image": "Product / vendor reference",
+    "midas": "Product / vendor reference",
     "room_image": "Room / target space",
     "inspiration": "Inspiration / look",
     "previous_result": "Previous result",
@@ -168,7 +169,6 @@ _REFERENCE_TYPE_TO_PHASE0 = {
 }
 _REFERENCE_TYPE_UNSUPPORTED = {
     "detail": "Phase-0 has no Detail reference role. The UIMidas type remains on the saved brief.",
-    "midas": "Catalogue / Midas library references are not a Phase-0 reference role.",
 }
 _MEDIA_IMAGE = {"jpg": "JPG", "jpeg": "JPG", "png": "PNG", "webp": "WebP"}
 _MEDIA_FILE = {"pdf": "PDF", "xls": "XLS", "xlsx": "XLSX", "csv": "CSV"}
@@ -293,6 +293,7 @@ def map_saved_brief_to_phase0_intake(
     revision: int,
     reference_files: list[ReferenceBytes],
     phase0_fields_not_in_brief: Phase0FieldsNotInBrief | None,
+    catalogue_products: Mapping[str, Any] | None = None,
 ) -> BriefMappingResult:
     """Build one Phase-0 intake per executable view/output, or explicit issues.
 
@@ -319,7 +320,7 @@ def map_saved_brief_to_phase0_intake(
         if item_index == 0:
             _map_envelope_category(contract, item, issues)
         units = _map_output_units(item, item_index, issues)
-        references = _map_references(item, reference_files, issues)
+        references = _map_references(item, reference_files, issues, catalogue_products)
         requested_pieces = _map_item_metadata(item, issues)
         count = item.metadata.item_count if item.metadata is not None else None
         selected_count = (
@@ -375,7 +376,7 @@ def map_saved_brief_to_phase0_intake(
                     },
                     "changes": changes.model_dump(mode="python"),
                     "preferences": prefs,
-                    "statements": [],
+                    "statements": _catalogue_statements(item, catalogue_products),
                     "unknowns": [],
                     "conflicts": [],
                 }
@@ -713,16 +714,34 @@ def _map_preferences(contract: ProposedJobContract, issues: list[MappingIssue]) 
     return payload
 
 
+def _catalogue_statements(
+    item: NormalizedBriefItem,
+    catalogue_products: Mapping[str, Any] | None,
+) -> list[dict[str, str]]:
+    if not catalogue_products:
+        return []
+    from app.runtime.catalogue_images import catalogue_provenance_statements
+
+    statements: list[dict[str, str]] = []
+    for ref in item.references:
+        product = catalogue_products.get(ref.id)
+        if product is None:
+            continue
+        statements.extend(catalogue_provenance_statements(ref, product))
+    return statements
+
+
 def _map_references(
     item: NormalizedBriefItem,
     reference_files: list[ReferenceBytes],
     issues: list[MappingIssue],
+    catalogue_products: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     uploaded = {row.reference_id: row for row in reference_files}
     mapped: list[dict[str, Any]] = []
     failed = False
     for index, ref in enumerate(item.references):
-        row = _map_one_reference(ref, index, uploaded, issues)
+        row = _map_one_reference(ref, index, uploaded, issues, catalogue_products)
         if row is None:
             failed = True
         else:
@@ -744,6 +763,7 @@ def _map_one_reference(
     index: int,
     uploaded: dict[str, ReferenceBytes],
     issues: list[MappingIssue],
+    catalogue_products: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     unsupported = _REFERENCE_TYPE_UNSUPPORTED.get(ref.type)
     if unsupported is not None:
@@ -752,6 +772,15 @@ def _map_one_reference(
             UNSUPPORTED_REFERENCE,
             f"references[{index}].type",
             f"{ref.type!r}: {unsupported}",
+        )
+        return None
+    catalogue = ref.type == "midas" or ref.source == "midas_library"
+    if catalogue and (ref.type != "midas" or ref.source != "midas_library"):
+        _issue(
+            issues,
+            UNSUPPORTED_REFERENCE,
+            f"references[{index}]",
+            "A Midas catalogue reference must use type midas and source midas_library.",
         )
         return None
     role = _REFERENCE_TYPE_TO_PHASE0.get(ref.type)
@@ -763,15 +792,7 @@ def _map_one_reference(
             f"{ref.type!r} is not classified for Phase-0 execution.",
         )
         return None
-    if ref.source == "midas_library":
-        _issue(
-            issues,
-            UNSUPPORTED_REFERENCE,
-            f"references[{index}].source",
-            "midas_library is catalogue execution and is not mapped. The saved brief was not changed.",
-        )
-        return None
-    if ref.source != "local_file" or ref.evidence is None:
+    if not catalogue and (ref.source != "local_file" or ref.evidence is None):
         _issue(
             issues,
             UNRESOLVED_REFERENCE,
@@ -779,12 +800,33 @@ def _map_one_reference(
             "The reference must be a local file with evidence. Filenames are not image content.",
         )
         return None
+    if catalogue and (ref.evidence is None or not (ref.evidence.library_key or "").strip()):
+        _issue(
+            issues,
+            UNRESOLVED_REFERENCE,
+            f"references[{index}].evidence.libraryKey",
+            "A Midas catalogue reference needs libraryKey (the catalogue product id). "
+            "Select the product again from Choose from Midas.",
+        )
+        return None
     file_row = uploaded.get(ref.id)
+    if catalogue and (file_row is None or not file_row.content_base64.strip()):
+        _issue(
+            issues,
+            MISSING_REFERENCE_BYTES,
+            f"references[{index}]",
+            "Catalogue image bytes were not ingested for this product. "
+            "The backend fetches the trusted catalogue image during job prepare. "
+            "Retry prepare, or upload a local JPG, PNG, or WebP.",
+        )
+        return None
+    evidence = ref.evidence
+    assert evidence is not None
     declared = (file_row.media_type if file_row is not None else None) or _media_from_name(
-        ref.evidence.file_name
+        evidence.file_name
     )
     media = _canonical_media_type(declared)
-    image = ref.evidence.media_kind == "image"
+    image = evidence.media_kind == "image"
     if image and media not in _PHASE0_IMAGE_MEDIA:
         _issue(
             issues,
@@ -810,9 +852,15 @@ def _map_one_reference(
             "do not send browser paths. The saved brief was not changed.",
         )
         return None
+    filename = evidence.file_name
+    product = None if catalogue_products is None else catalogue_products.get(ref.id)
+    if product is not None and media in _PHASE0_IMAGE_MEDIA:
+        from app.runtime.catalogue_images import catalogue_filename
+
+        filename = catalogue_filename(product, media)
     return {
         "reference_id": ref.id,
-        "filename": ref.evidence.file_name,
+        "filename": filename,
         "media_type": media,
         "hash_algorithm": "sha256",
         "role": role,
