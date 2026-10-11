@@ -2100,12 +2100,21 @@ button:disabled {
   gap: 12px;
 }
 
-.text-link {
+.text-link,
+.text-link:hover,
+.text-link:focus,
+.text-link:focus-visible,
+.text-link:active,
+.text-link:disabled {
   border: 0;
   background: transparent;
-  color: var(--ink);
+  color: #ffffff;
   font-weight: 600;
   min-height: 44px;
+}
+
+.text-link span {
+  color: #ffffff;
 }
 
 .upload {
@@ -2404,6 +2413,8 @@ button:disabled {
   overflow: hidden;
   border-radius: 28px;
   background: var(--card);
+  color: #1f1412;
+  color-scheme: light;
   animation: step-in 240ms var(--ease);
 }
 
@@ -2423,6 +2434,7 @@ button:disabled {
 
 .midas-dialog__head h2 {
   font-size: 1.6rem;
+  color: #1f1412;
 }
 
 .midas-dialog__head p,
@@ -2457,6 +2469,12 @@ button:disabled {
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   background: white;
+  color: #1f1412;
+}
+
+.midas-dialog__body .select-field input::placeholder {
+  color: #5c534e;
+  opacity: 1;
 }
 
 .midas-grid {
@@ -2516,17 +2534,44 @@ button:disabled {
   font-size: 0.95rem;
 }
 
+.midas-card__body h3 {
+  color: var(--ink);
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
 .midas-card button,
 .midas-pager button {
   min-height: 40px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   background: white;
+  color: #1f1412;
 }
 
-.midas-card[data-selected="true"] button {
-  border-color: var(--red);
-  color: var(--red);
+.midas-card button:hover,
+.midas-card button:focus-visible,
+.midas-pager button:hover:not(:disabled),
+.midas-pager button:focus-visible:not(:disabled) {
+  color: #b01c23;
+  border-color: #b01c23;
+  background: white;
+}
+
+.midas-card[data-selected="true"] button,
+.midas-card[data-selected="true"] button:hover,
+.midas-card[data-selected="true"] button:focus-visible,
+.midas-card[data-selected="true"] button:active {
+  border-color: #b01c23;
+  background: #b01c23;
+  color: #ffffff;
+}
+
+.midas-pager button:disabled {
+  color: #5c534e;
+  background: #f4f1ee;
+  border-color: #cfc6be;
+  opacity: 1;
 }
 
 .midas-pager {
@@ -2544,6 +2589,13 @@ button:disabled {
   padding-bottom: 16px;
   border-top: 1px solid var(--line);
   background: white;
+}
+
+.midas-dialog__foot .btn--primary,
+.midas-dialog__foot .btn--primary:hover:not(:disabled),
+.midas-dialog__foot .btn--primary:focus,
+.midas-dialog__foot .btn--primary:active:not(:disabled) {
+  color: #ffffff;
 }
 
 .midas-picks {
@@ -3494,4 +3546,86 @@ html[data-step-settle] .step-stage {
   .studio--stage .project-card:hover {
     transform: none;
   }
+}
+
+/* The dark stage paints light type onto this warm-white dialog. */
+.studio--stage .midas-dialog__head h2 {
+  max-width: none;
+  margin-bottom: 0;
+  color: #1f1412;
+  font-size: 1.6rem;
+}
+
+.studio--stage .midas-dialog__body .select-field > span {
+  color: #1f1412;
+}
+
+.studio--stage .midas-dialog .midas-pager,
+.studio--stage .midas-dialog .midas-card a,
+.studio--stage .midas-dialog__close {
+  color: #1f1412;
+}
+
+.studio--stage .file-list li,
+.studio--stage .midas-pick {
+  border: 1px solid rgba(247, 239, 230, 0.16);
+  background: rgba(247, 239, 230, 0.06);
+  color: #f7efe6;
+  box-shadow: none;
+}
+
+.studio--stage .file-list li:hover,
+.studio--stage .midas-pick:hover {
+  border-color: rgba(233, 207, 178, 0.7);
+  background: rgba(247, 239, 230, 0.1);
+}
+
+.studio--stage .file-list li:focus-within,
+.studio--stage .midas-pick:focus-within {
+  border-color: #b01c23;
+}
+
+.studio--stage .file-list li strong,
+.studio--stage .midas-pick strong {
+  color: #f7efe6;
+  overflow-wrap: anywhere;
+}
+
+.studio--stage .file-list li span span {
+  color: #d3c3b6;
+}
+
+.studio--stage .midas-pick a {
+  color: #e9cfb2;
+}
+
+.studio--stage .midas-pick a:hover,
+.studio--stage .midas-pick a:focus-visible {
+  color: #f7efe6;
+}
+
+.studio--stage .midas-pick > button,
+.studio--stage .file-list .btn--ghost,
+.studio--stage .midas-pick > button:focus-visible,
+.studio--stage .file-list .btn--ghost:focus-visible {
+  color: #f7efe6;
+}
+
+.studio--stage .midas-pick > button:hover,
+.studio--stage .midas-pick > button:focus-visible {
+  background: rgba(176, 28, 35, 0.38);
+  color: #ffffff;
+}
+
+.studio--stage .midas-pick .studio-select__trigger,
+.studio--stage .midas-pick .studio-select__trigger:hover,
+.studio--stage .midas-pick .studio-select__trigger:focus-visible {
+  border-color: rgba(247, 239, 230, 0.22);
+  background-color: rgba(247, 239, 230, 0.08);
+  color: #f7efe6;
+}
+
+.studio--stage .midas-pick .studio-select__trigger:hover,
+.studio--stage .midas-pick .studio-select__trigger:focus-visible {
+  border-color: #b01c23;
 }
