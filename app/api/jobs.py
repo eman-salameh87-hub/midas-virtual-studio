@@ -353,7 +353,7 @@ def post_job_eye(
             status_code=502,
             code="PROVIDER_FAILURE",
             message="Eye provider failed",
-            details={},
+            details=dict(exc.details),
         ) from exc
     return execute_eye_response(record)
 

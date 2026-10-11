@@ -91,7 +91,11 @@ class EyeNotRunError(Exception):
 
 
 class EyeProviderFailedError(Exception):
-    """Eye provider failed. The public message is stable; the cause is not exposed."""
+    """Eye provider failed. Public message is stable; details are redacted."""
+
+    def __init__(self, details: dict[str, object] | None = None) -> None:
+        self.details = details or {}
+        super().__init__("Eye provider failed")
 
 
 class BrainNotRunError(Exception):
@@ -650,13 +654,11 @@ def execute_job_eye(
             provider=bound,
         )
     except LivingRoomEyeMappingError as exc:
-        _commit(store, _eye_failed(record, model_id))
-        raise EyeProviderFailedError from exc
+        _fail_eye_provider(store, record, job_id, model_id, bound, exc)
     except (ValueError, ValidationError):
         raise
     except Exception as exc:
-        _commit(store, _eye_failed(record, model_id))
-        raise EyeProviderFailedError from exc
+        _fail_eye_provider(store, record, job_id, model_id, bound, exc)
 
     if (
         result.observation.contract_id != record.contract.contract_id
@@ -2175,7 +2177,31 @@ def _engine_failed(record: JobRecord, model_id: str) -> JobRecord:
     )
 
 
-def _eye_failed(record: JobRecord, model_id: str) -> JobRecord:
+def _fail_eye_provider(
+    store: JobStore,
+    record: JobRecord,
+    job_id: str,
+    model_id: str,
+    provider: EyeProvider,
+    exc: BaseException,
+) -> NoReturn:
+    details = provider_failure_details(exc, provider)
+    _commit(store, _eye_failed(record, model_id, details))
+    logger.warning(
+        "eye provider failed job_id=%s phase=%s exception_class=%s message=%s",
+        job_id,
+        details.get("phase"),
+        details.get("exception_class"),
+        details.get("message"),
+    )
+    raise EyeProviderFailedError(details) from exc
+
+
+def _eye_failed(
+    record: JobRecord,
+    model_id: str,
+    details: dict[str, Any] | None = None,
+) -> JobRecord:
     return record.model_copy(
         update={
             "stage": "eye",
@@ -2185,6 +2211,7 @@ def _eye_failed(record: JobRecord, model_id: str) -> JobRecord:
             "error": JobError(
                 code="PROVIDER_FAILURE",
                 message="Eye provider failed",
+                details=dict(details or {}),
             ),
             "eye_model_id": model_id,
             "events": list(record.events)

@@ -425,6 +425,12 @@ def test_eye_provider_failure_stops_planning() -> None:
     assert record.stage == "eye"
     assert record.observation is None
     assert record.brain is None
+    assert record.error is not None
+    assert record.error.code == "PROVIDER_FAILURE"
+    assert record.error.message == "Eye provider failed"
+    assert record.error.details["exception_class"] == "RuntimeError"
+    assert record.error.details["phase"] == "provider_wrapper"
+    assert "forced eye failure" in str(record.error.details["message"])
     assert len(eye.requests) == 1
     assert brain.requests == []
 

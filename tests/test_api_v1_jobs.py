@@ -359,13 +359,21 @@ def test_post_eye_with_failing_provider_hides_internals() -> None:
     assert response.status_code == 502
     body = response.json()
     assert body["error"]["code"] == "PROVIDER_FAILURE"
+    assert body["error"]["message"] == "Eye provider failed"
     assert "OpenRouter" not in body["error"]["message"]
     assert "secret" not in body["error"]["message"]
+    details = body["error"]["details"]
+    assert details["exception_class"] == "RuntimeError"
+    assert details["phase"] == "http_request"
+    assert "secret" not in str(details).lower()
     stored = JOB_STORE.get(job_id)
     assert stored is not None
     assert stored.state == "failed"
     assert stored.error is not None
     assert stored.error.code == "PROVIDER_FAILURE"
+    assert stored.error.details["exception_class"] == "RuntimeError"
+    assert stored.error.details["phase"] == "http_request"
+    assert "secret" not in str(stored.error.details).lower()
 
 
 def test_fake_provider_receives_job_reference_identity() -> None:
