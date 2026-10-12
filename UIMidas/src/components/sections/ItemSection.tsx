@@ -15,8 +15,9 @@ export function ItemSection({ onBack, onContinue }: { onBack: () => void; onCont
         Add your item.
       </h2>
 
-      <ReferencesSection />
-      <ItemTaxonomyFields item={item} onItem={setItem} />
+      <ReferencesSection>
+        <ItemTaxonomyFields item={item} onItem={setItem} />
+      </ReferencesSection>
 
       <StepFooter
         onBack={onBack}

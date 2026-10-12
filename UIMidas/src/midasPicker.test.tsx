@@ -147,7 +147,7 @@ describe("Midas product selector", () => {
     assert.match(view.host.textContent ?? "", /Selected/);
     await click(view.host, "Use 2 selections");
     assert.equal(view.host.querySelector("[role='dialog']"), null);
-    assert.match(view.host.textContent ?? "", /Your Midas selections/);
+    assert.equal((view.host.textContent ?? "").includes("Your Midas selections"), false);
     assert.match(view.host.textContent ?? "", /SIDEWINDER CHAIR - BROWN/);
     assert.match(view.host.textContent ?? "", /ABALI DINING TABLE- WHITE/);
     assert.equal(sink.references.items.length, 2);

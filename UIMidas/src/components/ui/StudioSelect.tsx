@@ -64,17 +64,27 @@ export function StudioSelect({
     const trigger = triggerRef.current;
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom - 8;
-    const spaceAbove = rect.top - 8;
-    const maxHeight = Math.min(280, Math.max(spaceBelow, spaceAbove, 120));
-    const openUp = spaceBelow < Math.min(220, maxHeight) && spaceAbove > spaceBelow;
+    const gap = 6;
+    const edge = 8;
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+    const spaceBelow = Math.max(0, viewportHeight - rect.bottom - gap - edge);
+    const spaceAbove = Math.max(0, rect.top - gap - edge);
+    const measured = menuRef.current?.scrollHeight ?? 0;
+    const desired = measured > 0 ? measured : Math.max(44, flat.length * 42 + 16);
+    const openUp = desired > spaceBelow && spaceAbove >= spaceBelow;
+    const menuHeight = Math.min(desired, openUp ? spaceAbove : spaceBelow);
+    const width = Math.min(Math.max(rect.width, 180), Math.max(0, viewportWidth - edge * 2));
+    let left = rect.left;
+    if (left + width > viewportWidth - edge) left = Math.max(edge, viewportWidth - edge - width);
+    if (left < edge) left = edge;
     setMenuBox({
-      top: openUp ? Math.max(8, rect.top - maxHeight - 6) : rect.bottom + 6,
-      left: rect.left,
-      width: Math.max(rect.width, 180),
-      maxHeight,
+      top: openUp ? rect.top - gap - menuHeight : rect.bottom + gap,
+      left,
+      width,
+      maxHeight: menuHeight,
     });
-  }, []);
+  }, [flat.length]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -95,12 +105,19 @@ export function StudioSelect({
       if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
       close();
     };
+    const viewport = window.visualViewport;
     window.addEventListener("resize", placeMenu);
     window.addEventListener("scroll", onScroll, true);
+    viewport?.addEventListener("resize", placeMenu);
+    viewport?.addEventListener("scroll", placeMenu);
     document.addEventListener("mousedown", onPointer);
+    const frame = window.requestAnimationFrame(placeMenu);
     return () => {
+      window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", placeMenu);
       window.removeEventListener("scroll", onScroll, true);
+      viewport?.removeEventListener("resize", placeMenu);
+      viewport?.removeEventListener("scroll", placeMenu);
       document.removeEventListener("mousedown", onPointer);
     };
   }, [close, open, placeMenu]);
