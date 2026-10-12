@@ -1,7 +1,9 @@
 name: Mirror to Railway repo
+
 on:
   push:
     branches: [main]
+
 jobs:
   mirror:
     runs-on: ubuntu-latest
@@ -10,4 +12,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - run: git push --force https://x-access-token:${{ secrets.MIRROR_TOKEN }}@github.com/eman-salameh87-hub/midas-virtual-studio.git HEAD:main
+
+      - name: Push to Mirror Repo
+        env:
+          TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          git push --force https://eman-salameh87-hub:${TOKEN}@github.com/eman-salameh87-hub/midas-virtual-studio.git HEAD:main
