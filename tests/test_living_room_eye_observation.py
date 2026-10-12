@@ -117,3 +117,114 @@ def test_historical_mapping_failures_still_fail() -> None:
             _historical(signals=[{"mark": LOGO_SIGNAL, "reading": "instruction"}]),
             _eye_input(),
         )
+
+
+def _assert_unrelated_eye_fields(observation) -> None:  # noqa: ANN001
+    assert observation.category_candidates[0].label == "Bed"
+    assert observation.items[0].name == "bed"
+    assert [fact.value for fact in observation.facts if fact.subject == "colour_observed"] == [
+        "grey"
+    ]
+    assert [
+        fact.value for fact in observation.facts if fact.subject == "material_appearance"
+    ] == ["fabric upholstery"]
+    assert [fact.value for fact in observation.facts if fact.subject == "design_locks"] == [
+        "padded headboard"
+    ]
+    assert observation.unknowns[0].detail == "hidden sides"
+    assert observation.regions == []
+    assert observation.signals == []
+    assert observation.ambiguities == []
+    assert observation.shown_views == []
+
+
+def test_empty_conflicts_leave_unrelated_eye_fields_unchanged() -> None:
+    observation = map_living_room_eye_json(_historical(), _eye_input())
+
+    assert observation.conflicts == []
+    _assert_unrelated_eye_fields(observation)
+
+
+def test_structured_conflicts_map_to_eye_conflict_with_bound_evidence() -> None:
+    observation = map_living_room_eye_json(
+        _historical(
+            conflicts=[
+                {
+                    "subject": "colour",
+                    "claims": ["photographed grey", "client name dusty-rose"],
+                }
+            ]
+        ),
+        _eye_input(),
+    )
+
+    assert len(observation.conflicts) == 1
+    conflict = observation.conflicts[0]
+    assert conflict.subject == "colour"
+    assert conflict.claims == ["photographed grey", "client name dusty-rose"]
+    assert conflict.evidence_reference_ids == ["ref-bed"]
+    _assert_unrelated_eye_fields(observation)
+
+
+def test_legacy_string_conflicts_still_fail_closed() -> None:
+    with pytest.raises(
+        LivingRoomEyeMappingError,
+        match="conflicts\\[\\] are historical strings; EyeObservation.conflicts requires "
+        "subject and at least two claims",
+    ):
+        map_living_room_eye_json(
+            _historical(conflicts=["photo disagrees with the client colour"]),
+            _eye_input(),
+        )
+
+
+def test_mixed_and_malformed_conflicts_still_fail_closed() -> None:
+    with pytest.raises(LivingRoomEyeMappingError, match="historical strings"):
+        map_living_room_eye_json(
+            _historical(
+                conflicts=[
+                    "photo disagrees with the client colour",
+                    {
+                        "subject": "colour",
+                        "claims": ["photographed grey", "client name dusty-rose"],
+                    },
+                ]
+            ),
+            _eye_input(),
+        )
+
+    with pytest.raises(LivingRoomEyeMappingError, match="must be an object"):
+        map_living_room_eye_json(
+            _historical(conflicts=[12]),
+            _eye_input(),
+        )
+
+    with pytest.raises(LivingRoomEyeMappingError, match="unsupported keys"):
+        map_living_room_eye_json(
+            _historical(
+                conflicts=[
+                    {
+                        "subject": "colour",
+                        "claims": ["photographed grey", "client name dusty-rose"],
+                        "evidence_reference_ids": ["invented"],
+                    }
+                ]
+            ),
+            _eye_input(),
+        )
+
+    with pytest.raises(LivingRoomEyeMappingError, match="at least two"):
+        map_living_room_eye_json(
+            _historical(
+                conflicts=[{"subject": "colour", "claims": ["photographed grey"]}]
+            ),
+            _eye_input(),
+        )
+
+    with pytest.raises(LivingRoomEyeMappingError, match="claims\\[0\\]"):
+        map_living_room_eye_json(
+            _historical(
+                conflicts=[{"subject": "colour", "claims": ["", "client name dusty-rose"]}]
+            ),
+            _eye_input(),
+        )

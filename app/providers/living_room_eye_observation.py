@@ -22,8 +22,13 @@ HISTORICAL_KEYS = (
     "conflicts",
 )
 ITEM_KEYS = ("item", "count", "role", "description")
+CONFLICT_KEYS = ("subject", "claims")
 HISTORICAL_ITEM_ROLES = {"product", "excluded", "context"}
 _PREVIOUS_RESULT_ROLES = {"Previous result", "previous_result"}
+_HISTORICAL_CONFLICT_STRINGS = (
+    "conflicts[] are historical strings; EyeObservation.conflicts requires "
+    "subject and at least two claims"
+)
 
 
 class LivingRoomEyeMappingError(ValueError):
@@ -56,13 +61,16 @@ def map_living_room_eye_json(
     - signals[] strings → SignalReading.mark with reading=None
       Historical format is short strings; it cannot name instruction,
       view, variant, or packaging. The adapter does not invent a reading.
+    - conflicts[] objects with subject and claims[≥2] → EyeConflict
+      evidence_reference_ids is bound from the single product reference;
+      the adapter does not invent claims or a subject.
 
     Failures (no silent mapping):
     - extra or missing historical keys
     - physical_items extra or missing keys
     - role outside product|excluded|context
     - signals[] entries that are not non-empty strings
-    - conflicts[] non-empty (strings cannot fill EyeConflict.claims)
+    - conflicts[] historical strings, mixed types, or malformed objects
     """
 
     mismatches: list[str] = []
@@ -107,13 +115,8 @@ def map_living_room_eye_json(
     mismatches.extend(lock_mismatches)
     unknowns, unknown_mismatches = _string_list(payload["unknowns"], "unknowns")
     mismatches.extend(unknown_mismatches)
-    conflicts, conflict_mismatches = _string_list(payload["conflicts"], "conflicts")
+    conflicts, conflict_mismatches = _map_conflicts(payload["conflicts"], reference)
     mismatches.extend(conflict_mismatches)
-    if conflicts:
-        mismatches.append(
-            "conflicts[] are historical strings; EyeObservation.conflicts requires "
-            "subject and at least two claims"
-        )
 
     if mismatches:
         raise LivingRoomEyeMappingError(mismatches)
@@ -167,7 +170,7 @@ def map_living_room_eye_json(
                 for unknown in unknowns
             ],
             "ambiguities": [],
-            "conflicts": [],
+            "conflicts": conflicts,
             "parsing_limitations": [],
             "relations": [],
             "regions": [
@@ -265,6 +268,74 @@ def _map_items(
             }
         )
     return items, mismatches
+
+
+def _map_conflicts(
+    raw: object,
+    reference: EyeSource,
+) -> tuple[list[dict[str, object]], list[str]]:
+    if not isinstance(raw, list):
+        return [], ["conflicts must be an array"]
+    mismatches: list[str] = []
+    mapped: list[dict[str, object]] = []
+    saw_historical_string = False
+    for index, entry in enumerate(raw):
+        prefix = f"conflicts[{index}]"
+        if isinstance(entry, str):
+            if entry.strip():
+                saw_historical_string = True
+            else:
+                mismatches.append(f"{prefix} must be a non-empty string")
+            continue
+        if not isinstance(entry, dict):
+            mismatches.append(
+                f"{prefix} must be an object with subject and claims"
+            )
+            continue
+        extra = sorted(set(entry) - set(CONFLICT_KEYS))
+        missing = [key for key in CONFLICT_KEYS if key not in entry]
+        if extra:
+            mismatches.append(f"{prefix} unsupported keys: {extra}")
+        if missing:
+            mismatches.append(f"{prefix} missing keys: {missing}")
+            continue
+        subject = entry["subject"]
+        claims = entry["claims"]
+        if not isinstance(subject, str) or not subject.strip():
+            mismatches.append(f"{prefix}.subject must be a non-empty string")
+            continue
+        if not isinstance(claims, list):
+            mismatches.append(f"{prefix}.claims must be an array")
+            continue
+        claim_values: list[str] = []
+        claim_ok = True
+        for claim_index, claim in enumerate(claims):
+            if not isinstance(claim, str) or not claim.strip():
+                mismatches.append(
+                    f"{prefix}.claims[{claim_index}] must be a non-empty string"
+                )
+                claim_ok = False
+                continue
+            claim_values.append(claim.strip())
+        if not claim_ok:
+            continue
+        if len(claim_values) < 2:
+            mismatches.append(
+                f"{prefix}.claims requires at least two non-empty strings"
+            )
+            continue
+        mapped.append(
+            {
+                "subject": subject.strip(),
+                "claims": claim_values,
+                "evidence_reference_ids": [reference.reference_id],
+            }
+        )
+    if saw_historical_string:
+        mismatches.append(_HISTORICAL_CONFLICT_STRINGS)
+    if mismatches:
+        return [], mismatches
+    return mapped, []
 
 
 def _string_list(raw: object, field: str) -> tuple[list[str], list[str]]:

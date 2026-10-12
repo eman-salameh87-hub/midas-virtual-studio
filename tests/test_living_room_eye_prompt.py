@@ -14,8 +14,8 @@ from app.providers.living_room_eye_prompt import (
     living_room_eye_standing_prompt,
 )
 
-EXPECTED_SHA256 = "84f114ea4bffb25d596e170740d02dd5d17c321ba51cae0e6f1a4e49bdd04408"
-EXPECTED_LENGTH = 2558
+EXPECTED_SHA256 = "9759930b77a3eff372b45a844cf0ece594d0aeaef44b027083d1ab23564409a4"
+EXPECTED_LENGTH = 2707
 _START = "You are the Eye of a furniture and home textile product studio."
 _END = "Do not write an image prompt."
 ASSET = (
@@ -91,4 +91,10 @@ def test_production_loader_does_not_access_midas_sources(
 @pytest.mark.skipif(not CORPUS.is_file(), reason="ignored MIDAS_SOURCES corpus is absent")
 def test_extract_equals_asset_when_corpus_present() -> None:
     html = CORPUS.read_text(encoding="utf-8")
-    assert extract_living_room_eye_standing_prompt(html) == living_room_eye_standing_prompt()
+    extracted = extract_living_room_eye_standing_prompt(html)
+    asset = living_room_eye_standing_prompt()
+    assert extracted.startswith(_START)
+    assert extracted.endswith(_END)
+    assert "array of short strings where the photo disagrees" in extracted
+    assert "array of objects with subject and claims" in asset
+    assert extracted != asset
