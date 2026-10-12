@@ -294,4 +294,66 @@ describe("project flow step 02", () => {
     assert.equal(ready?.localStatus, "ready");
     await view.unmount();
   });
+
+  it("grows the selection layout for uploads and Midas products together", async () => {
+    const sink: ItemSink = emptyPiece();
+    const view = await mount(createElement(ProjectItemHarness, { sink }));
+    const density = () => view.host.querySelector(".item-gallery__grid")?.getAttribute("data-count");
+
+    await click(view.host, "Choose from Midas");
+    const search = view.host.querySelector("#midas-search");
+    assert.ok(search);
+    const setter = Object.getOwnPropertyDescriptor(dom.HTMLInputElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(search, "111675");
+      search.dispatchEvent(new dom.Event("input", { bubbles: true }) as unknown as Event);
+    });
+    assert.match(view.host.textContent ?? "", /SIDEWINDER CHAIR - BROWN/);
+    await click(view.host, "Add reference +");
+    await click(view.host, "Use 1 selection");
+    assert.equal(density(), "1");
+    assert.equal(view.host.querySelector(".item-gallery__head"), null);
+    assert.equal((view.host.textContent ?? "").includes("Your Midas selections"), false);
+    assert.equal(view.host.querySelectorAll(".item-gallery img").length, 1);
+    assert.match(view.host.querySelector(".item-gallery")?.textContent ?? "", /Midas/);
+
+    await click(view.host, "Choose from Midas");
+    const nextSearch = view.host.querySelector("#midas-search");
+    assert.ok(nextSearch);
+    await act(async () => {
+      setter?.call(nextSearch, "165931");
+      nextSearch.dispatchEvent(new dom.Event("input", { bubbles: true }) as unknown as Event);
+    });
+    await click(view.host, "Add reference +");
+    await click(view.host, "Use 2 selections");
+    assert.equal(density(), "2");
+
+    await addFiles(view.host, [imageFile("sofa.jpg")]);
+    assert.equal(density(), "few");
+    assert.equal(view.host.querySelectorAll(".item-gallery img").length, 3);
+    assert.match(view.host.querySelector(".item-gallery")?.textContent ?? "", /Uploaded/);
+    assert.match(view.host.querySelector(".item-gallery")?.textContent ?? "", /sofa\.jpg/);
+    assert.equal(sink.references.items.length, 3);
+
+    await addFiles(view.host, [imageFile("lamp.jpg"), imageFile("table.jpg")]);
+    assert.equal(density(), "many");
+    assert.equal(view.host.querySelectorAll(".item-gallery .pick-card").length, 5);
+
+    const removeUpload = view.host.querySelector('[aria-label="Remove sofa.jpg"]');
+    assert.ok(removeUpload);
+    await act(async () => {
+      removeUpload.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }) as unknown as MouseEvent);
+    });
+    assert.equal(density(), "few");
+    assert.equal((view.host.textContent ?? "").includes("sofa.jpg"), false);
+
+    const removeProduct = view.host.querySelector('[aria-label="Remove SIDEWINDER CHAIR - BROWN"]');
+    assert.ok(removeProduct);
+    await act(async () => {
+      removeProduct.dispatchEvent(new dom.MouseEvent("click", { bubbles: true }) as unknown as MouseEvent);
+    });
+    assert.equal(sink.references.items.length, 3);
+    assert.equal(sink.references.items.some((entry) => entry.asset?.fileName === "SIDEWINDER CHAIR - BROWN"), false);
+    await view.unmount();
+  });
 });

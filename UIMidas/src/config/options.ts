@@ -257,6 +257,10 @@ export const deliveryViewOptions: LabeledOption<OutputView>[] = [
   { value: "wide_view", label: "Wide view" },
   { value: "close_up", label: "Close-up" },
   { value: "wide_view_close_up", label: "Wide view + close-up" },
+  { value: "three_quarter", label: "3/4 Angle View" },
+  { value: "front", label: "Front View" },
+  { value: "side", label: "Side View" },
+  { value: "top", label: "Top View" },
 ];
 
 export const deliveryProportionOptions: LabeledOption<ImageProportion>[] = [
@@ -274,7 +278,6 @@ export const deliveryResolutionOptions: LabeledOption<ImageResolution>[] = [
 
 /** Includes earlier stored ids so existing briefs still resolve. The Scope dropdown uses the delivery lists. */
 export const outputViewOptions: LabeledOption<OutputView>[] = [
-  ...deliveryViewOptions,
   { value: "front", label: "Front" },
   { value: "three_quarter", label: "Three-quarter" },
   { value: "side", label: "Side" },
@@ -282,6 +285,7 @@ export const outputViewOptions: LabeledOption<OutputView>[] = [
   { value: "top", label: "Top" },
   { value: "detail", label: "Detail" },
   { value: "in_situ", label: "In situ" },
+  ...deliveryViewOptions,
 ];
 
 export const proportionOptions: LabeledOption<ImageProportion>[] = [

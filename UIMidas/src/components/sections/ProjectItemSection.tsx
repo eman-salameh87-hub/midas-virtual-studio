@@ -33,8 +33,9 @@ export function ProjectItemSection({
         Add your item.
       </h2>
 
-      <ProjectReferencesSection references={references} onReferences={onReferences} onItem={onItem} />
-      <ItemTaxonomyFields item={item} onItem={onItem} />
+      <ProjectReferencesSection references={references} onReferences={onReferences} onItem={onItem}>
+        <ItemTaxonomyFields item={item} onItem={onItem} />
+      </ProjectReferencesSection>
 
       <StepFooter
         onBack={onBack}

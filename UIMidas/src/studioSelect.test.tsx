@@ -123,4 +123,68 @@ describe("studio select", () => {
     });
     host.remove();
   });
+
+  it("opens upward near the bottom of the viewport and downward when there is room", async () => {
+    const many = Array.from({ length: 8 }, (_, index) => ({ value: `view-${index}`, label: `View ${index + 1}` }));
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(createElement(StudioSelect, { value: "view-0", options: many, onChange: () => {} }));
+    });
+    const trigger = host.querySelector("button.studio-select__trigger") as HTMLButtonElement;
+    const box = { top: 640, bottom: 688, left: 48, right: 288, width: 240, height: 48, x: 48, y: 640, toJSON() { return {}; } };
+    trigger.getBoundingClientRect = () => box as DOMRect;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 760 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
+
+    await act(async () => {
+      trigger.click();
+    });
+    const menu = document.querySelector(".studio-select__menu") as HTMLElement;
+    assert.ok(menu);
+    const upwardTop = Number.parseFloat(menu.style.top);
+    const upwardHeight = Number.parseFloat(menu.style.maxHeight);
+    assert.ok(upwardTop + upwardHeight <= box.top, "menu should sit above the trigger");
+    assert.ok(upwardTop >= 8, "menu should stay inside the viewport");
+    const options = [...document.querySelectorAll(".studio-select__option")];
+    assert.equal(options[0]?.textContent, "View 1");
+    assert.equal(options.at(-1)?.textContent, "View 8");
+
+    await act(async () => {
+      trigger.click();
+    });
+    box.top = 40;
+    box.bottom = 88;
+    box.y = 40;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+    await act(async () => {
+      trigger.click();
+    });
+    const downward = document.querySelector(".studio-select__menu") as HTMLElement;
+    assert.ok(downward);
+    const downwardTop = Number.parseFloat(downward.style.top);
+    const downwardHeight = Number.parseFloat(downward.style.maxHeight);
+    assert.ok(downwardTop >= box.bottom, "menu should open below the trigger");
+    assert.ok(downwardTop + downwardHeight <= window.innerHeight - 8);
+
+    box.top = 620;
+    box.bottom = 668;
+    box.y = 620;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 740 });
+    await act(async () => {
+      window.dispatchEvent(new dom.Event("resize") as unknown as Event);
+    });
+    const resizedTop = Number.parseFloat(downward.style.top);
+    const resizedHeight = Number.parseFloat(downward.style.maxHeight);
+    assert.ok(
+      resizedTop + resizedHeight <= box.top,
+      `expected upward menu after resize, got top ${resizedTop} height ${resizedHeight} trigger ${box.top}`,
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+    host.remove();
+  });
 });

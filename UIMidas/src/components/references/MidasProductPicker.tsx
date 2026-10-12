@@ -234,9 +234,8 @@ export function MidasSelectionList({
   }
 
   return (
-    <section className="midas-picks" aria-labelledby="midas-picks-title">
-      <h3 id="midas-picks-title">Your Midas selections</h3>
-      <ul>
+    <section className="midas-picks">
+      <ul className="midas-picks__grid">
         {selected.map((reference) => {
           const key = reference.asset?.libraryKey ?? "";
           const product = byId.get(key);
@@ -244,16 +243,22 @@ export function MidasSelectionList({
           const href = product?.productUrl;
           const image = product?.imageUrl ?? reference.asset?.localPreviewUrl;
           return (
-            <li key={reference.id} className="midas-pick">
-              {image ? <img src={image} alt="" /> : <span className="midas-card__fallback">Midas</span>}
-              <span>
+            <li key={reference.id} className="midas-pick pick-card">
+              <div className="pick-card__media">
+                {image ? <img src={image} alt="" /> : <span className="midas-card__fallback">Midas</span>}
+                <button type="button" className="pick-card__remove" aria-label={`Remove ${name}`} onClick={() => remove(reference.id)}>
+                  <span aria-hidden="true">×</span>
+                </button>
+              </div>
+              <div className="pick-card__copy">
+                <span className="pick-card__origin">Midas</span>
                 <strong>{name}</strong>
                 {href ? (
                   <a href={href} target="_blank" rel="noopener noreferrer">
-                    Midas source ↗
+                    Midas source <span aria-hidden="true">↗</span>
                   </a>
                 ) : null}
-              </span>
+              </div>
               <StudioSelect
                 aria-label={`Role for ${name}`}
                 value={midasRole(reference)}
@@ -263,9 +268,6 @@ export function MidasSelectionList({
                 ]}
                 onChange={(role) => setRole(key, role as SingleItemRole)}
               />
-              <button type="button" aria-label={`Remove ${name}`} onClick={() => remove(reference.id)}>
-                ×
-              </button>
             </li>
           );
         })}

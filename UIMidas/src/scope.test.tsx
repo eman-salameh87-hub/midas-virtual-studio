@@ -98,7 +98,10 @@ describe("scope conditional ui", () => {
     const views = html.slice(html.indexOf(">Views<"), html.indexOf(">Image proportions<"));
     const proportions = html.slice(html.indexOf(">Image proportions<"), html.indexOf(">Resolution<"));
     const resolution = html.slice(html.indexOf(">Resolution<"), html.indexOf("step-footer"));
-    assert.match(views, /Category template.*Wide view.*Close-up.*Wide view \+ close-up/);
+    assert.match(
+      views,
+      /Category template.*Wide view.*Close-up.*Wide view \+ close-up.*3\/4 Angle View.*Front View.*Side View.*Top View/,
+    );
     assert.match(proportions, /Standard for category.*Square · 1:1.*Portrait · 4:5.*Landscape · 16:9/);
     assert.match(resolution, /Standard for category.*2K.*4K/);
     assert.match(views, /value="category_template" selected=""/);
@@ -117,6 +120,17 @@ describe("scope conditional ui", () => {
     assert.match(chosen, /value="wide_view" selected=""/);
     assert.match(chosen, /value="1:1" selected=""/);
     assert.match(chosen, /value="2k" selected=""/);
+
+    for (const [value, label] of [
+      ["three_quarter", "3/4 Angle View"],
+      ["front", "Front View"],
+      ["side", "Side View"],
+      ["top", "Top View"],
+    ] as const) {
+      const html = renderScope({ outputs: [], deliveryView: value, deliveryProportion: "1:1", deliveryResolution: "2k" });
+      assert.match(html, new RegExp(`value="${value}" selected=""`));
+      assert.match(html, new RegExp(`>${label}<`));
+    }
   });
 
   it("shows stored variation choices and other text when the scope screen is opened again", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { analyzeReferenceIntake, type ReferenceIntakeResult } from "../../adapters/analyzeReferenceIntake";
 import { loadMidasCatalogue } from "../../data/midasCatalogue";
 import { isMidasReference } from "../../lib/midasSelection";
@@ -49,7 +49,7 @@ type UpdateReferences = (update: (current: ReferencesDraft) => ReferencesDraft) 
 type UpdateItem = (update: (current: ItemDraft) => ItemDraft) => void;
 type AnalyzeFn = typeof analyzeReferenceIntake;
 
-export function ReferencesSection() {
+export function ReferencesSection({ children }: { children?: ReactNode }) {
   const [, setItem] = useItemDraft();
   const [references, , itemId, updateItemReferences, settleUploads] = useReferencesDraft();
   return (
@@ -58,7 +58,9 @@ export function ReferencesSection() {
       onReferences={(update) => updateItemReferences(itemId, update)}
       onItem={setItem}
       settleUploads={settleUploads}
-    />
+    >
+      {children}
+    </ReferencesIntake>
   );
 }
 
@@ -68,12 +70,14 @@ export function ReferencesIntake({
   onItem,
   settleUploads,
   analyze = analyzeReferenceIntake,
+  children,
 }: {
   references: ReferencesDraft;
   onReferences: UpdateReferences;
   onItem?: UpdateItem;
   settleUploads?: () => void;
   analyze?: AnalyzeFn;
+  children?: ReactNode;
 }) {
   const [kind, setKind] = useState<(typeof intakeTypeOptions)[number]["value"]>("product");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -201,78 +205,93 @@ export function ReferencesIntake({
   const analyzing = references.items.some((reference) => reference.analysisStatus === "pending");
 
   return (
-    <section className="references" aria-labelledby="references-title">
-      <div className="references__head">
-        <h3 id="references-title">Bring your references</h3>
-        <button type="button" className="text-link" onClick={() => setPickerOpen(true)}>
-          Choose from Midas
-          <span aria-hidden="true"> ↗</span>
-        </button>
-      </div>
-      {analyzing ? (
-        <p className="note" role="status">
-          Analyzing image…
-        </p>
-      ) : null}
+    <div className="item-board">
+      <div className="item-board__setup">
+        {children}
+        <div className="item-board__rule" />
+        <section className="references" aria-labelledby="references-title">
+          <h3 id="references-title" className="references__title">
+            Bring your references
+          </h3>
+          {analyzing ? (
+            <p className="note" role="status">
+              Analyzing image…
+            </p>
+          ) : null}
 
-      {uploaded.length !== 1 ? (
-        <label className="select-field select-field--type">
-          <span>What are you adding?</span>
-          <StudioSelect value={kind} options={intakeTypeOptions} onChange={(next) => setKind(next as (typeof intakeTypeOptions)[number]["value"])} />
-        </label>
-      ) : null}
+          {uploaded.length !== 1 ? (
+            <label className="select-field select-field--type">
+              <span>What are you adding?</span>
+              <StudioSelect value={kind} options={intakeTypeOptions} onChange={(next) => setKind(next as (typeof intakeTypeOptions)[number]["value"])} />
+            </label>
+          ) : null}
 
-      <label className="upload">
-        <input
-          type="file"
-          accept={accept}
-          multiple
-          onChange={(event) => {
-            if (event.target.files && event.target.files.length > 0) addFiles(event.target.files);
-            event.target.value = "";
-          }}
-        />
-        <UploadMark />
-        <span className="upload__title">Add images or product files</span>
-        <span className="upload__action">Choose files from your device</span>
-      </label>
-
-      {uploaded.length > 0 ? (
-        <ul className="file-list">
-          {uploaded.map((reference) => (
-            <ReferencePreviewRow
-              key={reference.id}
-              reference={reference}
-              onRemove={() => removeReference(reference.id)}
-              onReplace={reference.source === "local_file" ? (file) => replaceReference(reference, file) : undefined}
-              onType={(pick) => changeType(reference, pick)}
-              onConfirm={() =>
-                patchReference(reference.id, (current) => ({
-                  ...current,
-                  analysisStatus: "accepted",
-                  relevanceConfirmed: true,
-                  analysisMessage: null,
-                }))
-              }
-              onRetry={() => {
-                const generation = nextAnalysisGeneration(reference);
-                patchReference(reference.id, (current) => ({
-                  ...current,
-                  analysisStatus: "pending",
-                  analysisGeneration: generation,
-                  relevanceConfirmed: false,
-                }));
-                void runAnalysis({ ...reference, analysisGeneration: generation }, generation);
+          <label className="upload">
+            <input
+              type="file"
+              accept={accept}
+              multiple
+              onChange={(event) => {
+                if (event.target.files && event.target.files.length > 0) addFiles(event.target.files);
+                event.target.value = "";
               }}
             />
-          ))}
-        </ul>
-      ) : null}
-      <MidasSelectionList
-        references={references}
-        products={catalogue.products}
-        onReferences={(next) => onReferences(() => next)}
-      />
+            <UploadMark />
+            <span className="upload__title">Add images or product files</span>
+            <span className="upload__action">Choose files from your device</span>
+          </label>
+
+          <button type="button" className="text-link" onClick={() => setPickerOpen(true)}>
+            Choose from Midas
+            <span aria-hidden="true"> ↗</span>
+          </button>
+        </section>
+      </div>
+
+      <aside className="item-gallery">
+        {references.items.length === 0 ? (
+          <p className="item-gallery__empty">No references selected yet. Upload a file or choose a product from Midas.</p>
+        ) : (
+          <div className="item-gallery__grid" data-count={selectionDensity(references.items.length)}>
+            <MidasSelectionList
+              references={references}
+              products={catalogue.products}
+              onReferences={(next) => onReferences(() => next)}
+            />
+            {uploaded.length > 0 ? (
+              <ul className="file-list">
+                {uploaded.map((reference) => (
+                  <ReferencePreviewRow
+                    key={reference.id}
+                    reference={reference}
+                    onRemove={() => removeReference(reference.id)}
+                    onReplace={reference.source === "local_file" ? (file) => replaceReference(reference, file) : undefined}
+                    onType={(pick) => changeType(reference, pick)}
+                    onConfirm={() =>
+                      patchReference(reference.id, (current) => ({
+                        ...current,
+                        analysisStatus: "accepted",
+                        relevanceConfirmed: true,
+                        analysisMessage: null,
+                      }))
+                    }
+                    onRetry={() => {
+                      const generation = nextAnalysisGeneration(reference);
+                      patchReference(reference.id, (current) => ({
+                        ...current,
+                        analysisStatus: "pending",
+                        analysisGeneration: generation,
+                        relevanceConfirmed: false,
+                      }));
+                      void runAnalysis({ ...reference, analysisGeneration: generation }, generation);
+                    }}
+                  />
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        )}
+      </aside>
       <MidasProductDialog
         open={pickerOpen}
         products={catalogue.products}
@@ -288,7 +307,7 @@ export function ReferencesIntake({
           }
         }}
       />
-    </section>
+    </div>
   );
 }
 
@@ -315,15 +334,19 @@ function ReferencePreviewRow({
       : referenceIntakeMessage(reference);
   const blocking = referenceBlocksContinue(reference);
   return (
-    <li className="file-list__row" data-status={reference.analysisStatus ?? reference.localStatus}>
-      <div className="file-preview">
+    <li className="file-list__row pick-card" data-status={reference.analysisStatus ?? reference.localStatus}>
+      <div className="pick-card__media file-preview">
         {preview && reference.asset?.mediaKind === "image" ? (
           <img src={preview} alt="" />
         ) : (
           <span className="file-tile">{reference.asset?.mediaKind === "file" ? "File" : "Image"}</span>
         )}
+        <button type="button" className="pick-card__remove" onClick={onRemove} aria-label={`Remove ${fileName}`}>
+          <span aria-hidden="true">×</span>
+        </button>
       </div>
-      <span className="file-list__meta">
+      <span className="file-list__meta pick-card__copy">
+        <span className="pick-card__origin">Uploaded</span>
         <strong>{fileName}</strong>
         <label className="select-field select-field--type">
           <span>Reference type</span>
@@ -365,12 +388,16 @@ function ReferencePreviewRow({
             />
           </label>
         ) : null}
-        <button type="button" className="btn btn--ghost" onClick={onRemove} aria-label={`Remove ${fileName}`}>
-          Remove
-        </button>
       </span>
     </li>
   );
+}
+
+function selectionDensity(count: number): "1" | "2" | "few" | "many" {
+  if (count <= 1) return "1";
+  if (count === 2) return "2";
+  if (count <= 4) return "few";
+  return "many";
 }
 
 function UploadMark() {

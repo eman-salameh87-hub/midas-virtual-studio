@@ -47,6 +47,7 @@ export function ItemTaxonomyFields({ item, onItem }: { item: ItemDraft; onItem: 
           }}
         />
       </label>
+      <div className="taxonomy__pair">
       <label className="select-field">
         <span>Category</span>
         <StudioSelect
@@ -90,6 +91,7 @@ export function ItemTaxonomyFields({ item, onItem }: { item: ItemDraft; onItem: 
           }}
         />
       </label>
+      </div>
     </div>
   );
 }
