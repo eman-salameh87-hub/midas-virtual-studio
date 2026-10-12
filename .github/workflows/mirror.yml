@@ -17,4 +17,5 @@ jobs:
         env:
           TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
-          git push --force https://eman-salameh87-hub:${TOKEN}@github.com/eman-salameh87-hub/midas-virtual-studio.git HEAD:main
+          git remote set-url origin https://eman-salameh87-hub:${TOKEN}@github.com/eman-salameh87-hub/midas-virtual-studio.git
+          git push --force origin HEAD:main
