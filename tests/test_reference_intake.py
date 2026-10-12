@@ -1,119 +1,144 @@
-import pytest
-from pydantic import ValidationError
+"""Reference image intake analysis. Fake provider only. No OpenRouter."""
 
-from app.contracts.job import Phase0JobContract
-from app.runtime.references import decode_content_base64, freeze_intake_payload
-from tests.png_bytes import PNG_1X1, PNG_B64, PNG_HASH
+from __future__ import annotations
 
+import base64
 
-def _payload() -> dict:
-    return {
-        "contract_id": "contract-towel-1",
-        "revision": 1,
-        "owner_id": "owner-1",
-        "intent": {
-            "mode": "Manual",
-            "job_type": "New Project",
-            "job_option": "One by one (same department)",
-            "requested_outcomes": ["Lifestyle"],
-            "other_outcome": None,
-            "requested_pieces": ["towel"],
-            "excluded_pieces": [],
-            "selected_count": {"status": "declared", "value": 1},
-        },
-        "item": {
-            "department": "Accessories",
-            "category": "Bathroom",
-            "subcategory": "Towels",
-            "product_role": "hero",
-        },
-        "source_condition": {"input_condition": "annotated multi-view sheet"},
-        "references": [
-            {
-                "reference_id": "ref-towel",
-                "filename": "pixel.png",
-                "media_type": "PNG",
-                "hash_algorithm": "sha256",
-                "content_hash": PNG_HASH,
-                "role": "Product / vendor reference",
-                "content_base64": PNG_B64,
-            }
-        ],
-        "outputs": {
-            "views": ["Wide view"],
-            "image_proportions": "Square · 1:1",
-            "resolution": "2K",
-            "package_members": ["lifestyle"],
-        },
-        "changes": {
-            "policy_mode": "fidelity-locked",
-            "allowed_changes": ["styled setting"],
-            "protected_identity": ["towel count"],
-            "room_locks": [],
-            "creative_variables": [],
-        },
-        "preferences": {
-            "lighting": "Soft daylight",
-            "wall": "Sage",
-            "floor": "Limestone",
-            "plants": False,
-            "human": False,
-            "mood": "Calm & natural",
-        },
-        "statements": [],
-        "unknowns": [],
-        "conflicts": [],
-    }
+from fastapi.testclient import TestClient
+
+from app.api.reference_intake import get_reference_intake_provider
+from app.main import app
+from app.providers.fake_reference_intake import FakeReferenceIntakeProvider
+from app.providers.fail_closed_reference_intake import FailClosedReferenceIntakeProvider
+from app.providers.reference_intake import (
+    NOT_FURNITURE_MESSAGE,
+    ReferenceIntakeRequest,
+    constrain_intake_result,
+)
+from app.runtime.item_taxonomy import match_taxonomy
+from tests.png_bytes import PNG_1X1
 
 
-def test_decode_content_base64() -> None:
-    assert decode_content_base64(PNG_B64) == PNG_1X1
-    assert decode_content_base64(PNG_B64 + "\n") == PNG_1X1
-    with pytest.raises(ValueError, match="valid base64"):
-        decode_content_base64("!!!!")
+def _client() -> TestClient:
+    return TestClient(app)
 
 
-def test_freeze_keeps_identity_contract_and_stores_bytes() -> None:
-    contract, stored = freeze_intake_payload(_payload())
-    assert isinstance(contract, Phase0JobContract)
-    assert "content_base64" not in contract.references[0].model_dump()
-    assert stored["ref-towel"] == PNG_1X1
-    assert contract.references[0].content_hash == PNG_HASH
-    assert contract.references[0].role == "Product / vendor reference"
+def test_fake_accepts_furniture_and_constrains_taxonomy() -> None:
+    provider = FakeReferenceIntakeProvider(
+        department="home-furniture",
+        category="home-furniture/living-rooms",
+        subcategory="not-a-real-sub",
+    )
+    result = provider.analyze(ReferenceIntakeRequest(content_base64=base64.b64encode(PNG_1X1).decode()))
+    assert result.status == "accepted"
+    assert result.relevant is True
+    assert result.department == "home-furniture"
+    assert result.category == "home-furniture/living-rooms"
+    assert result.subcategory is None
+    assert result.suggested_reference_type == "product_image"
 
 
-def test_freeze_computes_hash_when_content_hash_is_missing() -> None:
-    payload = _payload()
-    del payload["references"][0]["content_hash"]
-    contract, stored = freeze_intake_payload(payload)
-    assert stored["ref-towel"] == PNG_1X1
-    assert contract.references[0].content_hash == PNG_HASH
-    assert contract.references[0].hash_algorithm == "sha256"
+def test_fake_rejects_non_furniture() -> None:
+    provider = FakeReferenceIntakeProvider(outcome="rejected")
+    result = provider.analyze(ReferenceIntakeRequest(content_base64="aaaa"))
+    assert result.status == "rejected"
+    assert result.relevant is False
+    assert result.suggested_reference_type is None
+    assert "not recognized" in result.message
 
 
-def test_freeze_computes_hash_when_content_hash_is_blank() -> None:
-    payload = _payload()
-    payload["references"][0]["content_hash"] = "   "
-    contract, stored = freeze_intake_payload(payload)
-    assert stored["ref-towel"] == PNG_1X1
-    assert contract.references[0].content_hash == PNG_HASH
+def test_fake_uncertain_does_not_accept() -> None:
+    provider = FakeReferenceIntakeProvider(outcome="uncertain")
+    result = provider.analyze(ReferenceIntakeRequest(content_base64="aaaa"))
+    assert result.status == "uncertain"
+    assert result.relevant is False
+    assert result.needs_confirmation is True
 
 
-def test_freeze_rejects_mismatched_content_hash() -> None:
-    payload = _payload()
-    payload["references"][0]["content_hash"] = "ab" * 32
-    with pytest.raises(ValueError, match="content_hash"):
-        freeze_intake_payload(payload)
+def test_accepted_without_relevance_is_rejected() -> None:
+    from app.providers.reference_intake import ReferenceIntakeResult
+
+    constrained = constrain_intake_result(
+        ReferenceIntakeResult(
+            status="accepted",
+            relevant=False,
+            needs_confirmation=False,
+            suggested_reference_type="product_image",
+            department="home-furniture",
+            category="home-furniture/living-rooms",
+            subcategory=None,
+            message="ok",
+        )
+    )
+    assert constrained.status == "rejected"
+    assert constrained.relevant is False
+    assert constrained.department is None
 
 
-def test_freeze_rejects_image_without_bytes() -> None:
-    payload = _payload()
-    del payload["references"][0]["content_base64"]
-    with pytest.raises(ValueError, match="content_base64"):
-        freeze_intake_payload(payload)
+def test_api_uses_injected_fake_and_redacts_provider_errors() -> None:
+    app.dependency_overrides[get_reference_intake_provider] = lambda: FakeReferenceIntakeProvider(
+        fail_with=RuntimeError("secret leaked OpenRouter HTTP 401")
+    )
+    try:
+        response = _client().post(
+            "/api/v1/reference-intake/analyze",
+            json={"content_base64": base64.b64encode(PNG_1X1).decode()},
+        )
+    finally:
+        app.dependency_overrides.pop(get_reference_intake_provider, None)
+    assert response.status_code == 502
+    body = response.json()["error"]
+    assert body["code"] == "PROVIDER_FAILURE"
+    assert "secret" not in body["message"].lower()
+    assert "secret" not in str(body["details"]).lower()
 
 
-def test_canonical_contract_still_rejects_content_base64() -> None:
-    payload = _payload()
-    with pytest.raises(ValidationError):
-        Phase0JobContract.model_validate(payload)
+def test_api_accepted_furniture() -> None:
+    app.dependency_overrides[get_reference_intake_provider] = lambda: FakeReferenceIntakeProvider()
+    try:
+        response = _client().post(
+            "/api/v1/reference-intake/analyze",
+            json={"content_base64": base64.b64encode(PNG_1X1).decode()},
+        )
+    finally:
+        app.dependency_overrides.pop(get_reference_intake_provider, None)
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["status"] == "accepted"
+    assert result["department"] == "home-furniture"
+
+
+def test_fail_closed_catalogue_is_product_reference() -> None:
+    provider = FailClosedReferenceIntakeProvider()
+    result = provider.analyze(ReferenceIntakeRequest(library_key="165931"))
+    assert result.status == "accepted"
+    assert result.relevant is True
+    assert result.suggested_reference_type == "product_image"
+    assert result.department == "home-furniture"
+    assert result.category == "home-furniture/dining-rooms"
+
+
+def test_fail_closed_local_image_is_uncertain_not_accepted() -> None:
+    provider = FailClosedReferenceIntakeProvider()
+    result = provider.analyze(
+        ReferenceIntakeRequest(content_base64=base64.b64encode(PNG_1X1).decode())
+    )
+    assert result.status == "uncertain"
+    assert result.relevant is False
+    assert result.needs_confirmation is True
+
+
+def test_fail_closed_garbage_bytes_rejected() -> None:
+    provider = FailClosedReferenceIntakeProvider()
+    result = provider.analyze(ReferenceIntakeRequest(content_base64="not-an-image"))
+    assert result.status == "rejected"
+    assert result.message == NOT_FURNITURE_MESSAGE
+
+
+def test_taxonomy_match_uses_existing_dining_rooms() -> None:
+    department, category, subcategory = match_taxonomy(
+        "ABALI DINING TABLE- WHITE",
+        "https://midasfurniture.com/qtr_en/abali-dining-table-dining-rooms-midas.html",
+    )
+    assert department == "home-furniture"
+    assert category == "home-furniture/dining-rooms"

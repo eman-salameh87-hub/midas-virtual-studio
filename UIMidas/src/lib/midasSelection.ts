@@ -77,6 +77,11 @@ function referenceFromProduct(choice: MidasSelection): ClientReference {
     productGroupId: null,
     localStatus: "ready",
     localStatusMessage: null,
+    analysisStatus: "pending",
+    analysisMessage: null,
+    analysisGeneration: 1,
+    typeEditedByUser: false,
+    relevanceConfirmed: false,
   };
 }
 

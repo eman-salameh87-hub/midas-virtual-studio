@@ -239,6 +239,11 @@ function stageLocalFile(
     productGroupId: product ? primaryProductGroupId : null,
     localStatus: failed ? "error" : "uploading",
     localStatusMessage: readFailed ? "This file could not be read." : problem,
+    analysisStatus: failed ? undefined : image ? "pending" : "skipped",
+    analysisMessage: failed ? null : undefined,
+    analysisGeneration: failed ? 0 : 1,
+    typeEditedByUser: false,
+    relevanceConfirmed: failed ? false : !image,
   };
 }
 

@@ -1,14 +1,13 @@
-import { itemTaxonomy, itemTaxonomyGroups } from "../../config/options";
-import { useItemDraft } from "../../state/DraftProvider";
+import { referenceBlocksContinue } from "../../lib/referenceAnalysis";
+import { useItemDraft, useReferencesDraft } from "../../state/DraftProvider";
 import { StepFooter } from "../ui/chrome";
-import { StudioSelect } from "../ui/StudioSelect";
+import { ItemTaxonomyFields } from "./ItemTaxonomyFields";
 import { ReferencesSection } from "./ReferencesSection";
 
 export function ItemSection({ onBack, onContinue }: { onBack: () => void; onContinue: () => void }) {
   const [item, setItem] = useItemDraft();
-  const automatic = item.categoryState === "automatic_unknown";
-  const department = itemTaxonomy.find((entry) => entry.id === item.department) ?? null;
-  const category = department?.categories.find((entry) => entry.id === item.category) ?? null;
+  const [references] = useReferencesDraft();
+  const blocked = references.items.some((reference) => referenceBlocksContinue(reference));
 
   return (
     <div className="stack item">
@@ -16,69 +15,15 @@ export function ItemSection({ onBack, onContinue }: { onBack: () => void; onCont
         Add your item.
       </h2>
 
-      <div className="taxonomy">
-        <label className="select-field">
-          <span>Department</span>
-          <StudioSelect
-            value={item.department ?? ""}
-            disabled={automatic}
-            options={[{ value: "", label: "Automatic from references" }]}
-            groups={itemTaxonomyGroups.map((group) => ({
-              label: group.label,
-              options: group.options.map((option) => ({ value: option.id, label: option.label })),
-            }))}
-            onChange={(departmentId) => {
-              if (!departmentId) {
-                setItem(() => ({ categoryState: "automatic_unknown", department: null, category: null, subcategory: null }));
-                return;
-              }
-              setItem(() => ({
-                categoryState: "specified",
-                department: departmentId,
-                category: null,
-                subcategory: null,
-              }));
-            }}
-          />
-        </label>
-        <label className="select-field">
-          <span>Category</span>
-          <StudioSelect
-            value={item.category ?? ""}
-            disabled={automatic || !department || department.categories.length === 0}
-            options={[
-              { value: "", label: "Automatic from references" },
-              ...(department?.categories.map((option) => ({ value: option.id, label: option.label })) ?? []),
-            ]}
-            onChange={(categoryId) => {
-              setItem((current) => ({
-                ...current,
-                categoryState: "specified",
-                category: categoryId || null,
-                subcategory: null,
-              }));
-            }}
-          />
-        </label>
-        <label className="select-field">
-          <span>Sub-category</span>
-          <StudioSelect
-            value={item.subcategory ?? ""}
-            disabled={automatic || !category || category.subcategories.length === 0}
-            options={[
-              { value: "", label: "Automatic from references" },
-              ...(category?.subcategories.map((option) => ({ value: option.id, label: option.label })) ?? []),
-            ]}
-            onChange={(subcategory) => {
-              setItem((current) => ({ ...current, categoryState: "specified", subcategory: subcategory || null }));
-            }}
-          />
-        </label>
-      </div>
-
       <ReferencesSection />
+      <ItemTaxonomyFields item={item} onItem={setItem} />
 
-      <StepFooter onBack={onBack} onContinue={onContinue} continueLabel="Choose the outcomes" />
+      <StepFooter
+        onBack={onBack}
+        onContinue={onContinue}
+        continueLabel="Choose the outcomes"
+        continueDisabled={blocked}
+      />
     </div>
   );
 }

@@ -783,7 +783,7 @@ button:disabled {
   width: 100%;
   height: 148px;
   border-radius: 12px;
-  object-fit: cover;
+  object-fit: contain;
   background: var(--paper-deep);
 }
 
@@ -2157,6 +2157,18 @@ button:disabled {
   font-size: 0.92rem;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .file-list {
   list-style: none;
   margin: 0;
@@ -2165,9 +2177,10 @@ button:disabled {
   gap: 8px;
 }
 
-.file-list li {
-  display: flex;
-  justify-content: space-between;
+.file-list li,
+.file-list__row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
@@ -2175,14 +2188,42 @@ button:disabled {
   background: #fafafb;
 }
 
+.file-preview,
+.file-preview img,
+.file-list .file-tile {
+  width: 96px;
+  height: 96px;
+  border-radius: 12px;
+  object-fit: contain;
+  background: var(--paper-deep);
+}
+
+.file-list__meta {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.file-list__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .file-list li > span {
   display: grid;
   min-width: 0;
 }
 
-.file-list li span span {
+.file-list li span span,
+.file-list__status {
   color: var(--ink-soft);
   font-size: 0.88rem;
+}
+
+.file-list__status--error {
+  color: var(--red);
 }
 
 .delivery {
@@ -2388,9 +2429,21 @@ button:disabled {
   }
 
   .references__head,
-  .file-list li {
+  .file-list li,
+  .file-list__row,
+  .midas-pick {
     align-items: flex-start;
     flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+
+  .file-preview,
+  .file-preview img,
+  .file-list .file-tile,
+  .midas-pick img,
+  .midas-pick .midas-card__fallback {
+    width: 100%;
+    height: 180px;
   }
 }
 
@@ -2508,12 +2561,10 @@ button:disabled {
 }
 
 .midas-card img,
-.midas-card__fallback,
-.midas-pick img,
-.midas-pick .midas-card__fallback {
+.midas-card__fallback {
   width: 100%;
   height: 150px;
-  object-fit: cover;
+  object-fit: contain;
   background: var(--paper-deep);
 }
 
@@ -2614,7 +2665,7 @@ button:disabled {
 
 .midas-pick {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) auto auto;
+  grid-template-columns: 180px minmax(0, 1fr) auto auto;
   gap: 14px;
   align-items: center;
   padding: 12px;
@@ -2628,9 +2679,10 @@ button:disabled {
 
 .midas-pick img,
 .midas-pick .midas-card__fallback {
-  width: 72px;
-  height: 72px;
+  width: 180px;
+  height: 180px;
   border-radius: 12px;
+  object-fit: contain;
 }
 
 .midas-pick span {

@@ -29,9 +29,10 @@ from app.runtime.checksum import annotate_checksum
 from app.runtime.reference_metadata import retain_stored_measurements
 from app.runtime.artifacts import (
     ArtifactStore,
+    FilesystemArtifactStore,
     generation_artifact_name,
-    get_artifact_store,
     output_filename,
+    user_outputs_root,
 )
 from app.runtime.state import (
     BrainInputMetadata,
@@ -71,7 +72,7 @@ def recover_jobs_from_artifacts(
 ) -> list[str]:
     """Load completed jobs from disk into JobStore. Skip jobs already in memory."""
 
-    store = artifacts or get_artifact_store()
+    store = artifacts or FilesystemArtifactStore(user_outputs_root())
     recovered: list[str] = []
     for job_id in store.list_job_ids():
         if job_store.get(job_id) is not None:

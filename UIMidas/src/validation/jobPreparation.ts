@@ -1,3 +1,4 @@
+import { referenceBlocksContinue, referenceIntakeMessage } from "../lib/referenceAnalysis";
 import { isPhase0ImageFile, localFileFor } from "../lib/references";
 import { itemsForRequest } from "../lib/requestItems";
 import type { ClientJobDraft, ScopeOutput } from "../types/draft";
@@ -128,6 +129,15 @@ function referencePreparationIssues(
           ),
         );
       }
+      if (referenceBlocksContinue(reference)) {
+        issues.push(
+          issue(
+            "references",
+            `items.${itemId}.references.${reference.id}.analysis`,
+            referenceIntakeMessage(reference) ?? "This catalogue image is still being checked.",
+          ),
+        );
+      }
       continue;
     }
     if (reference.source !== "local_file" || reference.localStatus === "error") continue;
@@ -148,6 +158,15 @@ function referencePreparationIssues(
           "references",
           `items.${itemId}.references.${reference.id}`,
           "Executable image intake accepts JPG, PNG, or WebP only.",
+        ),
+      );
+    }
+    if (referenceBlocksContinue(reference)) {
+      issues.push(
+        issue(
+          "references",
+          `items.${itemId}.references.${reference.id}.analysis`,
+          referenceIntakeMessage(reference) ?? "This image is still being checked.",
         ),
       );
     }

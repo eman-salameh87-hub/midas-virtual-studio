@@ -88,7 +88,10 @@ export function MidasProductDialog({
     setDraft((current) => {
       const next = new Map(current);
       if (next.has(product.id)) next.delete(product.id);
-      else next.set(product.id, "secondary");
+      else {
+        const hasHero = [...current.values()].includes("hero");
+        next.set(product.id, hasHero ? "secondary" : "hero");
+      }
       return next;
     });
   }

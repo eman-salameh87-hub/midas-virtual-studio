@@ -9,16 +9,19 @@ from app.api.jobs import (
     get_repair_planner,
     get_stylist_provider,
 )
+from app.api.reference_intake import get_reference_intake_provider
 from app.main import app
 from app.providers.fake_brain import FakeBrainProvider
 from app.providers.fake_engine import FakeEngineCompiler
 from app.providers.fake_eye import FakeEyeProvider
+from app.providers.fake_reference_intake import FakeReferenceIntakeProvider
 from app.providers.fake_critique import FakeCritiqueProvider
 from app.providers.fake_generation import FakeGenerationProvider
 from app.providers.fake_repair import FakeRepairPlanner
 from app.providers.fake_stylist import FakeStylistProvider
 from app.runtime.artifacts import reset_artifact_store
 from app.runtime.client_briefs import CLIENT_BRIEF_STORE
+from app.runtime.execution_mode import reset_execution_mode
 from app.runtime.orchestrator import join_scheduled_planning
 from app.runtime.state import JOB_STORE
 
@@ -35,10 +38,24 @@ def clear_job_store() -> None:
 
 @pytest.fixture(autouse=True)
 def isolated_artifact_store(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Point writes at pytest's tmp dir. default_outputs_root also refuses the
+    # canonical repo outputs/ while PYTEST_CURRENT_TEST is set.
     monkeypatch.setenv("MIDAS_OUTPUTS_DIR", str(tmp_path / "outputs"))
+    reset_execution_mode()
     reset_artifact_store()
     yield
+    reset_execution_mode()
     reset_artifact_store()
+
+
+@pytest.fixture(autouse=True)
+def use_fake_reference_intake_unless_live(request: pytest.FixtureRequest) -> None:
+    if request.node.get_closest_marker("live_provider"):
+        yield
+        return
+    app.dependency_overrides[get_reference_intake_provider] = lambda: FakeReferenceIntakeProvider()
+    yield
+    app.dependency_overrides.pop(get_reference_intake_provider, None)
 
 
 @pytest.fixture(autouse=True)

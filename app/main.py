@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse
 from app.api.errors import ApiError, ErrorResponse, api_error_handler, request_validation_handler
 from app.api.client_briefs import router as client_briefs_router
 from app.api.jobs import router as jobs_router
+from app.api.reference_intake import router as reference_intake_router
 from app.runtime.client_briefs import CLIENT_BRIEF_STORE, recover_client_briefs_from_artifacts
 from app.runtime.recovery import recover_jobs_from_artifacts
 from app.runtime.state import JOB_STORE
@@ -54,6 +55,7 @@ POST_DOC_PATHS = (
     "/api/v1/jobs",
     "/api/v1/client-briefs",
     "/api/v1/client-briefs/{brief_id}/jobs",
+    "/api/v1/reference-intake/analyze",
     "/api/v1/jobs/{job_id}/eye",
     "/api/v1/jobs/{job_id}/brain",
     "/api/v1/jobs/{job_id}/stylist",
@@ -111,6 +113,7 @@ app.add_middleware(
 )
 app.include_router(jobs_router)
 app.include_router(client_briefs_router)
+app.include_router(reference_intake_router)
 
 
 def _openapi() -> dict:

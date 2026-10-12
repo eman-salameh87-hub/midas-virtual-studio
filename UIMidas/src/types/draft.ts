@@ -34,6 +34,8 @@ export interface ItemDraft {
   department: string | null;
   category: string | null;
   subcategory: string | null;
+  /** Browser-only. Set when the user edits Department/Category/Sub-category. */
+  taxonomyEditedByUser?: boolean;
 }
 
 export type ReferenceType =
@@ -91,6 +93,12 @@ export interface ClientReference {
   localStatus?: LocalAssetStatus;
   /** Client-facing intake note. Omitted from the normalized brief. */
   localStatusMessage?: string | null;
+  /** Browser-only image analysis. Omitted from the job contract. */
+  analysisStatus?: "pending" | "accepted" | "rejected" | "uncertain" | "failed" | "skipped";
+  analysisMessage?: string | null;
+  analysisGeneration?: number;
+  typeEditedByUser?: boolean;
+  relevanceConfirmed?: boolean;
 }
 
 export interface ReferencesDraft {

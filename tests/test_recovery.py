@@ -312,7 +312,7 @@ def test_existing_outputs_job_is_recoverable_without_provider_calls() -> None:
     if not (job_dir / "job.json").is_file():
         return
     generation = FakeGenerationProvider()
-    artifacts = FilesystemArtifactStore(REPO_OUTPUTS)
+    artifacts = FilesystemArtifactStore(REPO_OUTPUTS)  # read-only recovery of an existing user job
     store = InMemoryJobStore()
     recovered = recover_jobs_from_artifacts(store, artifacts)
     assert REAL_JOB_ID in recovered

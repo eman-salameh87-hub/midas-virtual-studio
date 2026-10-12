@@ -15,6 +15,7 @@ dist/
 build/
 
 outputs/
+evaluation_outputs/
 *.log
 
 MIDAS_SOURCES/

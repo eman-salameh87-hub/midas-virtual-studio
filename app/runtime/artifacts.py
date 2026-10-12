@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 from typing import Protocol
@@ -494,13 +495,47 @@ def persist_job_record(
 _store_lock = threading.Lock()
 _store: FilesystemArtifactStore | None = None
 _store_root: str | None = None
+_pytest_write_root: Path | None = None
 
 
-def default_outputs_root() -> Path:
+def canonical_user_outputs_root() -> Path:
+    """Repo ``outputs/`` used by real user jobs when MIDAS_OUTPUTS_DIR is unset."""
+
+    return Path(__file__).resolve().parents[2] / "outputs"
+
+
+def user_outputs_root() -> Path:
+    """User-facing job artifacts. Recovery reads this tree."""
+
     env = os.getenv("MIDAS_OUTPUTS_DIR")
     if env and env.strip():
         return Path(env.strip())
-    return Path(__file__).resolve().parents[2] / "outputs"
+    return canonical_user_outputs_root()
+
+
+def automated_test_outputs_root() -> Path:
+    """Process-local pytest write root. Never the user ``outputs/`` tree."""
+
+    global _pytest_write_root
+    with _store_lock:
+        if _pytest_write_root is None:
+            _pytest_write_root = Path(tempfile.mkdtemp(prefix="midas-pytest-outputs-"))
+        return _pytest_write_root
+
+
+def _pytest_is_running() -> bool:
+    return bool(os.getenv("PYTEST_CURRENT_TEST"))
+
+
+def default_outputs_root() -> Path:
+    from app.runtime.execution_mode import evaluation_outputs_root, is_evaluation_mode
+
+    if is_evaluation_mode():
+        return evaluation_outputs_root()
+    root = user_outputs_root()
+    if _pytest_is_running() and root.resolve() == canonical_user_outputs_root().resolve():
+        return automated_test_outputs_root()
+    return root
 
 
 def get_artifact_store() -> FilesystemArtifactStore:

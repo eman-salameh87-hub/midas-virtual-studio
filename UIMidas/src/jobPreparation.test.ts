@@ -96,4 +96,16 @@ describe("job preparation readiness", () => {
     assert.equal(issues.length, 0);
     assert.equal(issues.some((issue) => issue.message.includes("not executed")), false);
   });
+
+  it("blocks a rejected or unconfirmed image analysis", () => {
+    const draft = executableDraft();
+    const item = draft.items[0];
+    item.references.items[0] = {
+      ...item.references.items[0],
+      analysisStatus: "rejected",
+      analysisMessage: "This image is not recognized as relevant furniture, product, or interior reference material.",
+    };
+    const issues = jobPreparationIssues(draft, item.id);
+    assert.equal(issues.some((issue) => issue.message.includes("not recognized")), true);
+  });
 });

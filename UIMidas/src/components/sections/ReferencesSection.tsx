@@ -1,21 +1,31 @@
 import { useEffect, useRef, useState } from "react";
+import { analyzeReferenceIntake, type ReferenceIntakeResult } from "../../adapters/analyzeReferenceIntake";
 import { loadMidasCatalogue } from "../../data/midasCatalogue";
-import { MidasProductDialog, MidasSelectionList, useMidasCatalogue } from "../references/MidasProductPicker";
-import { StudioSelect } from "../ui/StudioSelect";
 import { isMidasReference } from "../../lib/midasSelection";
 import {
+  applyIntakeResult,
+  applyTaxonomyFromIntake,
+  invalidateAnalysis,
+  nextAnalysisGeneration,
+  referenceBlocksContinue,
+  referenceIntakeMessage,
+} from "../../lib/referenceAnalysis";
+import {
   assignReferenceType,
+  localFileFor,
   markReferenceReady,
+  replaceLocalFile,
   revokePreview,
   stageLocalFiles,
   withoutReference,
   type LocalIntakeKind,
 } from "../../lib/references";
-import { useReferencesDraft } from "../../state/DraftProvider";
+import { useItemDraft, useReferencesDraft } from "../../state/DraftProvider";
+import type { ClientReference, ItemDraft, ReferenceType, ReferencesDraft } from "../../types/draft";
+import { MidasProductDialog, MidasSelectionList, useMidasCatalogue } from "../references/MidasProductPicker";
+import { StudioSelect } from "../ui/StudioSelect";
 
-type ReferencePick = LocalIntakeKind | "detail" | "other_view" | "midas";
-
-const fileTypes: { value: Exclude<ReferencePick, "detail" | "midas">; label: string }[] = [
+export const intakeTypeOptions: { value: Exclude<LocalIntakeKind, never> | "other_view"; label: string }[] = [
   { value: "product", label: "Product / vendor reference" },
   { value: "room_image", label: "Room / target space" },
   { value: "inspiration", label: "Inspiration / look" },
@@ -24,20 +34,48 @@ const fileTypes: { value: Exclude<ReferencePick, "detail" | "midas">; label: str
   { value: "specification_file", label: "Specifications / Excel" },
 ];
 
-const shownTypeLabels: Record<string, string> = {
-  product_image: "Product / vendor reference",
-  room_image: "Room / target space",
-  inspiration: "Inspiration / look",
-  previous_result: "Previous result",
-  other_view: "Other views / pieces",
-  detail: "Other views / pieces",
-  specification_file: "Specifications / Excel",
-  midas: "Midas reference",
+const typeToPick: Record<string, (typeof intakeTypeOptions)[number]["value"]> = {
+  product_image: "product",
+  midas: "product",
+  room_image: "room_image",
+  inspiration: "inspiration",
+  previous_result: "previous_result",
+  other_view: "other_view",
+  detail: "other_view",
+  specification_file: "specification_file",
 };
 
+type UpdateReferences = (update: (current: ReferencesDraft) => ReferencesDraft) => void;
+type UpdateItem = (update: (current: ItemDraft) => ItemDraft) => void;
+type AnalyzeFn = typeof analyzeReferenceIntake;
+
 export function ReferencesSection() {
+  const [, setItem] = useItemDraft();
   const [references, , itemId, updateItemReferences, settleUploads] = useReferencesDraft();
-  const [kind, setKind] = useState<ReferencePick>("product");
+  return (
+    <ReferencesIntake
+      references={references}
+      onReferences={(update) => updateItemReferences(itemId, update)}
+      onItem={setItem}
+      settleUploads={settleUploads}
+    />
+  );
+}
+
+export function ReferencesIntake({
+  references,
+  onReferences,
+  onItem,
+  settleUploads,
+  analyze = analyzeReferenceIntake,
+}: {
+  references: ReferencesDraft;
+  onReferences: UpdateReferences;
+  onItem?: UpdateItem;
+  settleUploads?: () => void;
+  analyze?: AnalyzeFn;
+}) {
+  const [kind, setKind] = useState<(typeof intakeTypeOptions)[number]["value"]>("product");
   const [pickerOpen, setPickerOpen] = useState(false);
   const catalogue = useMidasCatalogue(loadMidasCatalogue);
   const timers = useRef<number[]>([]);
@@ -47,40 +85,120 @@ export function ReferencesSection() {
     return () => {
       for (const timer of pending) window.clearTimeout(timer);
       pending.length = 0;
-      settleUploads();
+      settleUploads?.();
     };
   }, [settleUploads]);
 
-  function addFiles(files: FileList) {
-    if (kind === "midas") return;
-    const intake: LocalIntakeKind = kind === "detail" || kind === "other_view" ? "product" : kind;
-    const created = stageLocalFiles(Array.from(files), intake, references.primaryProductGroupId, references.items).map((reference) =>
-      kind === "detail" || kind === "other_view" ? assignReferenceType(reference, kind, references.primaryProductGroupId) : reference,
-    );
-    updateItemReferences(itemId, (current) => ({ ...current, items: [...current.items, ...created] }));
-    for (const reference of created) {
-      if (reference.localStatus !== "uploading") continue;
-      const assetId = reference.asset?.id;
-      const timer = window.setTimeout(() => {
-        updateItemReferences(itemId, (current) => ({
+  function patchReference(id: string, update: (current: ClientReference) => ClientReference) {
+    onReferences((current) => ({
+      ...current,
+      items: current.items.map((entry) => (entry.id === id ? update(entry) : entry)),
+    }));
+  }
+
+  async function runAnalysis(reference: ClientReference, generation: number, file?: File | null) {
+    if (reference.type === "specification_file" || reference.asset?.mediaKind === "file") {
+      patchReference(reference.id, (current) => {
+        if ((current.analysisGeneration ?? 0) !== generation) return current;
+        return {
           ...current,
-          items: current.items.map((entry) =>
-            entry.id === reference.id && entry.asset?.id === assetId ? markReferenceReady(entry) : entry,
-          ),
-        }));
-      }, 280);
-      timers.current.push(timer);
+          analysisStatus: "skipped",
+          analysisMessage: null,
+          relevanceConfirmed: true,
+        };
+      });
+      return;
     }
+    try {
+      const result = await analyze({
+        libraryKey: reference.asset?.libraryKey,
+        file: file ?? (reference.source === "local_file" ? localFileFor(reference.id) ?? null : null),
+        intendedKind: null,
+      });
+      applyResult(reference.id, generation, result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Image analysis failed. Retry or replace the image. It was not marked valid.";
+      patchReference(reference.id, (current) => {
+        if ((current.analysisGeneration ?? 0) !== generation) return current;
+        return {
+          ...current,
+          analysisStatus: "failed",
+          analysisMessage: message,
+          relevanceConfirmed: false,
+        };
+      });
+    }
+  }
+
+  function applyResult(id: string, generation: number, result: ReferenceIntakeResult) {
+    onReferences((current) => {
+      let applied = false;
+      const items = current.items.map((entry) => {
+        if (entry.id !== id) return entry;
+        const next = applyIntakeResult(entry, generation, result, current.primaryProductGroupId);
+        if (next) applied = true;
+        return next ?? entry;
+      });
+      if (applied) {
+        queueMicrotask(() => {
+          onItem?.((item) => applyTaxonomyFromIntake(item, result));
+        });
+      }
+      return { ...current, items };
+    });
+  }
+
+  function addFiles(files: FileList) {
+    const intake: LocalIntakeKind = kind === "other_view" ? "product" : kind;
+    const created = stageLocalFiles(Array.from(files), intake, references.primaryProductGroupId, references.items).map(
+      (reference) => {
+        const typed =
+          kind === "other_view"
+            ? assignReferenceType(reference, "other_view", references.primaryProductGroupId)
+            : reference;
+        return kind === "product" ? typed : { ...typed, typeEditedByUser: true };
+      },
+    );
+    const filesArray = Array.from(files);
+    onReferences((current) => ({
+      ...current,
+      items: [...current.items, ...created.map((entry) => (entry.localStatus === "uploading" ? markReferenceReady(entry) : entry))],
+    }));
+    created.forEach((reference, index) => {
+      if (reference.localStatus === "error") return;
+      void runAnalysis(reference, reference.analysisGeneration ?? 1, filesArray[index]);
+    });
   }
 
   function removeReference(id: string) {
     const existing = references.items.find((item) => item.id === id);
     if (existing) revokePreview(existing);
-    updateItemReferences(itemId, (current) => ({ ...current, items: withoutReference(current.items, id) }));
+    onReferences((current) => ({ ...current, items: withoutReference(current.items, id) }));
+  }
+
+  function replaceReference(reference: ClientReference, file: File) {
+    const next = invalidateAnalysis(
+      replaceLocalFile(reference, file, references.primaryProductGroupId, references.items.filter((entry) => entry.id !== reference.id)),
+    );
+    onReferences((current) => ({
+      ...current,
+      items: current.items.map((entry) => (entry.id === reference.id ? next : entry)),
+    }));
+    void runAnalysis(next, next.analysisGeneration ?? 1, file);
+  }
+
+  function changeType(reference: ClientReference, pick: (typeof intakeTypeOptions)[number]["value"]) {
+    if (reference.type === "midas") return;
+    const type: ReferenceType = pick === "product" ? "product_image" : pick;
+    patchReference(reference.id, (current) => ({
+      ...assignReferenceType(current, type, references.primaryProductGroupId),
+      typeEditedByUser: true,
+    }));
   }
 
   const accept = kind === "specification_file" ? "image/*,.pdf,.txt,application/pdf,text/plain" : "image/*";
   const uploaded = references.items.filter((reference) => !isMidasReference(reference));
+  const analyzing = references.items.some((reference) => reference.analysisStatus === "pending");
 
   return (
     <section className="references" aria-labelledby="references-title">
@@ -91,54 +209,69 @@ export function ReferencesSection() {
           <span aria-hidden="true"> ↗</span>
         </button>
       </div>
+      {analyzing ? (
+        <p className="note" role="status">
+          Analyzing image…
+        </p>
+      ) : null}
 
-      <label className="select-field select-field--type">
-        <span>Reference type</span>
-        <StudioSelect
-          value={kind}
-          options={fileTypes}
-          onChange={(next) => setKind(next as ReferencePick)}
-        />
-      </label>
+      {uploaded.length !== 1 ? (
+        <label className="select-field select-field--type">
+          <span>What are you adding?</span>
+          <StudioSelect value={kind} options={intakeTypeOptions} onChange={(next) => setKind(next as (typeof intakeTypeOptions)[number]["value"])} />
+        </label>
+      ) : null}
 
       <label className="upload">
-          <input
-            type="file"
-            accept={accept}
-            multiple
-            onChange={(event) => {
-              if (event.target.files && event.target.files.length > 0) addFiles(event.target.files);
-              event.target.value = "";
-            }}
-          />
-          <UploadMark />
-          <span className="upload__title">Add images or product files</span>
-          <span className="upload__action">Choose files from your device</span>
-        </label>
+        <input
+          type="file"
+          accept={accept}
+          multiple
+          onChange={(event) => {
+            if (event.target.files && event.target.files.length > 0) addFiles(event.target.files);
+            event.target.value = "";
+          }}
+        />
+        <UploadMark />
+        <span className="upload__title">Add images or product files</span>
+        <span className="upload__action">Choose files from your device</span>
+      </label>
 
       {uploaded.length > 0 ? (
         <ul className="file-list">
-          {uploaded.map((reference) => {
-            const typeLabel = shownTypeLabels[reference.type] ?? "Reference";
-            const problem = reference.localStatus === "error" ? reference.localStatusMessage : null;
-            return (
-              <li key={reference.id}>
-                <span>
-                  <strong>{reference.asset?.fileName ?? "Untitled"}</strong>
-                  <span>{problem ?? typeLabel}</span>
-                </span>
-                <button type="button" className="btn btn--ghost" onClick={() => removeReference(reference.id)} aria-label={`Remove ${reference.asset?.fileName ?? "file"}`}>
-                  Remove
-                </button>
-              </li>
-            );
-          })}
+          {uploaded.map((reference) => (
+            <ReferencePreviewRow
+              key={reference.id}
+              reference={reference}
+              onRemove={() => removeReference(reference.id)}
+              onReplace={reference.source === "local_file" ? (file) => replaceReference(reference, file) : undefined}
+              onType={(pick) => changeType(reference, pick)}
+              onConfirm={() =>
+                patchReference(reference.id, (current) => ({
+                  ...current,
+                  analysisStatus: "accepted",
+                  relevanceConfirmed: true,
+                  analysisMessage: null,
+                }))
+              }
+              onRetry={() => {
+                const generation = nextAnalysisGeneration(reference);
+                patchReference(reference.id, (current) => ({
+                  ...current,
+                  analysisStatus: "pending",
+                  analysisGeneration: generation,
+                  relevanceConfirmed: false,
+                }));
+                void runAnalysis({ ...reference, analysisGeneration: generation }, generation);
+              }}
+            />
+          ))}
         </ul>
       ) : null}
       <MidasSelectionList
         references={references}
         products={catalogue.products}
-        onReferences={(next) => updateItemReferences(itemId, () => next)}
+        onReferences={(next) => onReferences(() => next)}
       />
       <MidasProductDialog
         open={pickerOpen}
@@ -146,9 +279,97 @@ export function ReferencesSection() {
         status={catalogue.status}
         references={references}
         onClose={() => setPickerOpen(false)}
-        onCommit={(next) => updateItemReferences(itemId, () => next)}
+        onCommit={(next) => {
+          const previous = new Set(references.items.map((entry) => entry.id));
+          onReferences(() => next);
+          for (const reference of next.items) {
+            if (previous.has(reference.id) || !isMidasReference(reference)) continue;
+            void runAnalysis(reference, reference.analysisGeneration ?? 1);
+          }
+        }}
       />
     </section>
+  );
+}
+
+function ReferencePreviewRow({
+  reference,
+  onRemove,
+  onReplace,
+  onType,
+  onConfirm,
+  onRetry,
+}: {
+  reference: ClientReference;
+  onRemove: () => void;
+  onReplace?: (file: File) => void;
+  onType: (pick: (typeof intakeTypeOptions)[number]["value"]) => void;
+  onConfirm: () => void;
+  onRetry: () => void;
+}) {
+  const fileName = reference.asset?.fileName ?? "Untitled";
+  const preview = reference.asset?.localPreviewUrl;
+  const message =
+    reference.localStatus === "error"
+      ? reference.localStatusMessage
+      : referenceIntakeMessage(reference);
+  const blocking = referenceBlocksContinue(reference);
+  return (
+    <li className="file-list__row" data-status={reference.analysisStatus ?? reference.localStatus}>
+      <div className="file-preview">
+        {preview && reference.asset?.mediaKind === "image" ? (
+          <img src={preview} alt="" />
+        ) : (
+          <span className="file-tile">{reference.asset?.mediaKind === "file" ? "File" : "Image"}</span>
+        )}
+      </div>
+      <span className="file-list__meta">
+        <strong>{fileName}</strong>
+        <label className="select-field select-field--type">
+          <span>Reference type</span>
+          <StudioSelect
+            value={typeToPick[reference.type] ?? "product"}
+            options={intakeTypeOptions}
+            onChange={(next) => onType(next as (typeof intakeTypeOptions)[number]["value"])}
+          />
+        </label>
+        {message ? (
+          <span className={blocking ? "file-list__status file-list__status--error" : "file-list__status"} role={blocking ? "alert" : undefined}>
+            {message}
+          </span>
+        ) : null}
+      </span>
+      <span className="file-list__actions">
+        {reference.analysisStatus === "uncertain" && !reference.relevanceConfirmed ? (
+          <button type="button" className="btn btn--secondary" onClick={onConfirm}>
+            Confirm furniture reference
+          </button>
+        ) : null}
+        {reference.analysisStatus === "failed" ? (
+          <button type="button" className="btn btn--secondary" onClick={onRetry}>
+            Retry analysis
+          </button>
+        ) : null}
+        {onReplace ? (
+          <label className="btn btn--ghost replace-control">
+            Replace
+            <input
+              type="file"
+              accept="image/*"
+              aria-label={`Replace ${fileName}`}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) onReplace(file);
+                event.target.value = "";
+              }}
+            />
+          </label>
+        ) : null}
+        <button type="button" className="btn btn--ghost" onClick={onRemove} aria-label={`Remove ${fileName}`}>
+          Remove
+        </button>
+      </span>
+    </li>
   );
 }
 

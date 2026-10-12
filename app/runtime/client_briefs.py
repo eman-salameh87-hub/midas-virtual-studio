@@ -27,7 +27,7 @@ from app.contracts.client_brief import (
     ProposedJobContract,
     dump_omitting_optional_nones,
 )
-from app.runtime.artifacts import get_artifact_store
+from app.runtime.artifacts import FilesystemArtifactStore, get_artifact_store, user_outputs_root
 
 logger = logging.getLogger("app.runtime.client_briefs")
 
@@ -165,7 +165,7 @@ def recover_client_briefs_from_artifacts(
 ) -> ClientBriefRecoveryResult:
     """Load valid client_brief.json artifacts. Report corrupt records explicitly."""
 
-    artifacts = get_artifact_store()
+    artifacts = FilesystemArtifactStore(user_outputs_root())
     recovered: list[str] = []
     errors: list[ClientBriefRecoveryError] = []
     root = artifacts.root

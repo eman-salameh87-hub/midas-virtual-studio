@@ -1,11 +1,13 @@
 import { GlobalWindow } from "happy-dom";
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ItemSection } from "./components/sections/ItemSection";
 import { ProjectItemSection } from "./components/sections/ProjectItemSection";
 import { DraftProvider } from "./state/DraftProvider";
 import { createEmptyBriefItem } from "./state/emptyDraft";
+import type { ReferenceIntakeResult } from "./adapters/analyzeReferenceIntake";
+import { installAnalyzeStub } from "./testAnalyzeStub";
 
 const dom = new GlobalWindow({ url: "http://localhost/" });
 Object.assign(globalThis, {
@@ -116,6 +118,8 @@ function imageFile(name: string): File {
 }
 
 describe("project flow step 02", () => {
+  const restoreFetch = installAnalyzeStub();
+  after(restoreFetch);
   it("renders the same item screen as Manual", () => {
     const piece = emptyPiece();
     const manual = renderToStaticMarkup(
@@ -221,10 +225,11 @@ describe("project flow step 02", () => {
     assert.match(view.host.textContent ?? "", /sofa\.jpg/);
     assert.match(view.host.textContent ?? "", /sofa-side\.jpg/);
     assert.match(view.host.textContent ?? "", /Product \/ vendor reference/);
+    assert.equal(view.host.querySelectorAll(".file-list .select-field--type").length, 2);
     const groupId = sink.references.primaryProductGroupId;
     assert.equal(sink.references.items.length, 2);
     assert.ok(sink.references.items.every((entry) => entry.productGroupId === groupId && entry.relationship === "same_product"));
-    await choose(fieldSelect(view.host, "Reference type"), "room_image");
+    await choose(fieldSelect(view.host, "What are you adding?"), "room_image");
     await addFiles(view.host, [imageFile("room.jpg")]);
     const room = sink.references.items.find((entry) => entry.asset?.fileName === "room.jpg");
     assert.equal(room?.relationship, "supporting_context");
@@ -233,18 +238,57 @@ describe("project flow step 02", () => {
     await view.unmount();
   });
 
+  it("populates department, category, and sub-category from a mocked classify response", async () => {
+    const restore = installAnalyzeStub({
+      status: "accepted",
+      relevant: true,
+      needs_confirmation: false,
+      suggested_reference_type: "Product / vendor reference" as ReferenceIntakeResult["suggested_reference_type"],
+      department: "Home Furniture",
+      category: "Living Rooms",
+      subcategory: "Sofas",
+      message: "Classified as a sofa product photograph.",
+    });
+    try {
+      const view = await mount(
+        createElement(DraftProvider, null, createElement(ItemSection, { onBack: () => {}, onContinue: () => {} })),
+      );
+      await addFiles(view.host, [imageFile("sofa.jpg")]);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      assert.equal(fieldSelect(view.host, "Department").value, "home-furniture");
+      assert.equal(fieldSelect(view.host, "Category").value, "home-furniture/living-rooms");
+      assert.equal(fieldSelect(view.host, "Sub-category").value, "home-furniture/living-rooms/sofa");
+      assert.equal(fieldSelect(view.host, "Department").disabled, false);
+      assert.match(view.host.textContent ?? "", /Classified as a sofa product photograph/);
+      const typeLabels = [...view.host.querySelectorAll("label")].filter(
+        (entry) => entry.querySelector("span")?.textContent === "Reference type",
+      );
+      const addLabels = [...view.host.querySelectorAll("label")].filter(
+        (entry) => entry.querySelector("span")?.textContent === "What are you adding?",
+      );
+      assert.equal(typeLabels.length, 1);
+      assert.equal(addLabels.length, 0);
+      await view.unmount();
+    } finally {
+      restore();
+    }
+  });
+
   it("reports file errors for an empty upload", async () => {
     const sink: ItemSink = emptyPiece();
     const view = await mount(createElement(ProjectItemHarness, { sink }));
-    await choose(fieldSelect(view.host, "Reference type"), "product");
+    await choose(fieldSelect(view.host, "What are you adding?"), "product");
     await addFiles(view.host, [new dom.File([], "empty.jpg", { type: "image/jpeg" }) as unknown as File]);
     assert.match(view.host.textContent ?? "", /This file is empty\./);
     assert.equal(sink.references.items.find((entry) => entry.asset?.fileName === "empty.jpg")?.localStatus, "error");
     await addFiles(view.host, [imageFile("ready.jpg")]);
-    const pending = sink.references.items.find((entry) => entry.asset?.fileName === "ready.jpg");
-    assert.equal(pending?.localStatus, "uploading");
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 320));
+      await Promise.resolve();
     });
     const ready = sink.references.items.find((entry) => entry.asset?.fileName === "ready.jpg");
     assert.equal(ready?.localStatus, "ready");

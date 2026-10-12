@@ -1,11 +1,12 @@
 import { GlobalWindow } from "happy-dom";
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ProjectScopeSection } from "./components/sections/ProjectScopeSection";
 import { ScopeSection } from "./components/sections/ScopeSection";
 import { DraftProvider } from "./state/DraftProvider";
 import type { ProjectScopeOutput } from "./lib/projectBrief";
+import { installAnalyzeStub } from "./testAnalyzeStub";
 
 const dom = new GlobalWindow({ url: "http://localhost/" });
 Object.assign(globalThis, {
@@ -138,6 +139,8 @@ function checkedValues(host: ParentNode, name: string) {
 }
 
 describe("project flow step 03", () => {
+  const restoreFetch = installAnalyzeStub();
+  after(restoreFetch);
   it("renders the seven outputs and leaves out View & delivery", () => {
     const projects = renderToStaticMarkup(
       createElement(ProjectScopeSection, {
@@ -342,6 +345,14 @@ describe("project flow step 03", () => {
   });
 
   it("keeps an uploading or failed reference from opening review", async () => {
+    const restoreHang = installAnalyzeStub();
+    const pendingFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/api/v1/reference-intake/analyze")) {
+        return new Promise(() => {}) as Promise<Response>;
+      }
+      return pendingFetch(input, init);
+    }) as typeof fetch;
     const uploading = await mount(createElement(ClientFirstPage));
     await click(uploading.host, "Projects");
     await click(uploading.host, "Continue to the item");
@@ -353,6 +364,7 @@ describe("project flow step 03", () => {
     assert.match(uploading.host.textContent ?? "", /Add your item\./);
     assert.equal(uploading.host.textContent?.includes("Submit job"), false);
     await uploading.unmount();
+    restoreHang();
 
     const failed = await mount(createElement(ClientFirstPage));
     await click(failed.host, "Projects");
